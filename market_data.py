@@ -2,7 +2,7 @@
 Market Data Module
 ==================
 
-Reads public BTC market data from Binance.
+Reads public BTC market data from Coinbase.
 
 PAPER TRADING ONLY:
 - No API keys
@@ -18,8 +18,7 @@ from datetime import datetime, timezone
 import requests
 
 
-BINANCE_URL = "https://api.binance.com/api/v3/ticker/price"
-SYMBOL = "BTCUSDT"
+COINBASE_URL = "https://api.exchange.coinbase.com/products/BTC-USD/ticker"
 
 FIVE_MINUTES = 5 * 60
 
@@ -34,13 +33,15 @@ class MarketData:
 
 def get_btc_price() -> float:
     """
-    Get current BTC/USDT price from Binance public API.
+    Get current BTC/USD price from Coinbase public API.
     """
 
     response = requests.get(
-        BINANCE_URL,
-        params={"symbol": SYMBOL},
+        COINBASE_URL,
         timeout=10,
+        headers={
+            "User-Agent": "polymarket-btc-paper-trader/1.0"
+        },
     )
 
     response.raise_for_status()
@@ -109,18 +110,18 @@ def print_market_data(data: MarketData) -> None:
     print("BTC MARKET DATA")
     print("=" * 50)
 
-    print(f"BTC/USDT:        ${data.btc_price:,.2f}")
+    print(f"BTC/USD:          ${data.btc_price:,.2f}")
 
     print(
-        f"5m window start: {format_timestamp(data.window_start)}"
+        f"5m window start:  {format_timestamp(data.window_start)}"
     )
 
     print(
-        f"5m window end:   {format_timestamp(data.window_end)}"
+        f"5m window end:    {format_timestamp(data.window_end)}"
     )
 
     print(
-        f"Seconds left:    {data.seconds_remaining}"
+        f"Seconds remaining: {data.seconds_remaining}"
     )
 
     print("=" * 50)
@@ -134,7 +135,7 @@ def run_test() -> None:
     Simple live public-data test.
     """
 
-    print("Connecting to Binance public market data...")
+    print("Connecting to Coinbase public market data...")
 
     try:
         data = get_market_data()
@@ -143,12 +144,12 @@ def run_test() -> None:
 
     except requests.RequestException as error:
         print()
-        print("ERROR: Could not retrieve Binance market data.")
+        print("ERROR: Could not retrieve Coinbase market data.")
         print(error)
 
     except (KeyError, ValueError, TypeError) as error:
         print()
-        print("ERROR: Unexpected Binance response.")
+        print("ERROR: Unexpected Coinbase response.")
         print(error)
 
 
