@@ -91,16 +91,20 @@ def get_5m_open(start_timestamp):
 
     end_timestamp = start_timestamp + FIVE_MINUTES
 
+    start_dt = datetime.fromtimestamp(
+        start_timestamp,
+        timezone.utc,
+    )
+
+    end_dt = datetime.fromtimestamp(
+        end_timestamp,
+        timezone.utc,
+    )
+
     params = {
         "granularity": FIVE_MINUTES,
-        "start": datetime.fromtimestamp(
-            start_timestamp,
-            timezone.utc,
-        ).isoformat(),
-        "end": datetime.fromtimestamp(
-            end_timestamp,
-            timezone.utc,
-        ).isoformat(),
+        "start": start_dt.isoformat(),
+        "end": end_dt.isoformat(),
     }
 
     response = requests.get(
@@ -118,32 +122,16 @@ def get_5m_open(start_timestamp):
             "Unexpected market data response."
         )
 
-    if len(data) == 0:
+    if not data:
         raise RuntimeError(
             "No 5-minute candle data returned."
         )
 
-    # Find the candle belonging to the
-    # current 5-minute window.
-    for candle in data:
+    # ----------------------------------------------------------
+    # Parse all valid candles
+    # ----------------------------------------------------------
 
-        if not isinstance(candle, list):
-            continue
-
-        if len(candle) < 6:
-            continue
-
-        candle_timestamp = int(candle[0])
-
-        if candle_timestamp == start_timestamp:
-
-            return float(candle[3])
-
-    # Coinbase can occasionally return the candle
-    # with a slightly different timestamp.
-    # In that case use the candle with the closest
-    # timestamp to the current window.
-    valid = []
+    candles = []
 
     for candle in data:
 
@@ -154,36 +142,56 @@ def get_5m_open(start_timestamp):
             continue
 
         try:
-            candle_timestamp = int(candle[0])
-            candle_open = float(candle[3])
 
-            distance = abs(
-                candle_timestamp - start_timestamp
-            )
+            timestamp = int(candle[0])
+            opening = float(candle[3])
 
-            valid.append(
-                (
-                    distance,
-                    candle_timestamp,
-                    candle_open,
-                )
+            candles.append(
+                {
+                    "timestamp": timestamp,
+                    "open": opening,
+                }
             )
 
         except (TypeError, ValueError):
+
             continue
 
-    if valid:
-
-        valid.sort(
-            key=lambda item: item[0]
+    if not candles:
+        raise RuntimeError(
+            "No valid 5-minute candles returned."
         )
 
-        distance, timestamp, opening = valid[0]
+    # ----------------------------------------------------------
+    # Exact candle
+    # ----------------------------------------------------------
 
-        # Only accept a nearby candle.
-        if distance <= FIVE_MINUTES:
+    for candle in candles:
 
-            return opening
+        if candle["timestamp"] == start_timestamp:
+
+            return candle["open"]
+
+    # ----------------------------------------------------------
+    # Coinbase sometimes returns candles around the
+    # requested interval. Select the closest candle,
+    # but only if it is reasonably close.
+    # ----------------------------------------------------------
+
+    closest = min(
+        candles,
+        key=lambda candle: abs(
+            candle["timestamp"] - start_timestamp
+        ),
+    )
+
+    distance = abs(
+        closest["timestamp"] - start_timestamp
+    )
+
+    if distance <= FIVE_MINUTES:
+
+        return closest["open"]
 
     raise RuntimeError(
         "No suitable 5-minute candle found."
@@ -227,6 +235,16 @@ def get_market_data():
         btc_open = current_price
 
         source = "Coinbase ticker fallback"
+
+    # ----------------------------------------------------------
+    # Calculate BTC movement
+    # ----------------------------------------------------------
+
+    if btc_open <= 0:
+
+        raise RuntimeError(
+            "Invalid BTC opening price."
+        )
 
     movement = (
         (current_price - btc_open)
