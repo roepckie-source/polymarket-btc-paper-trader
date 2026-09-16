@@ -13,7 +13,7 @@ PAPER ONLY
 
 from datetime import datetime, timezone
 
-from market_data import get_market_data as get_coinbase_data
+from market_data import get_market_data
 from polymarket_data import get_market_data as get_polymarket_data
 from strategy import evaluate
 
@@ -23,7 +23,6 @@ from strategy import evaluate
 # ==========================================================
 
 PAPER_BANKROLL = 100.00
-DAILY_VOLATILITY = 0.04
 
 
 # ==========================================================
@@ -77,7 +76,7 @@ def print_header():
 
 
 # ==========================================================
-# ONE PAPER-LIVE RUN
+# ONE RUN
 # ==========================================================
 
 def run_once():
@@ -92,18 +91,19 @@ def run_once():
             "%Y-%m-%d %H:%M:%S UTC"
         )
     )
+
     print()
 
 
     # ======================================================
-    # 1. MARKET DATA
+    # 1. BTC MARKET DATA
     # ======================================================
 
     print("=" * 60)
     print("1. BTC MARKET DATA")
     print("=" * 60)
 
-    btc = get_coinbase_data()
+    btc = get_market_data()
 
     source = btc.get(
         "source",
@@ -149,20 +149,23 @@ def run_once():
 
 
     # ======================================================
-    # DATA QUALITY CHECK
+    # DATA QUALITY
     # ======================================================
 
     if source != "Kraken 5m candle + Coinbase ticker":
 
         print("NO TRADE")
+
         print(
             "Reason: Valid Kraken 5-minute candle "
             "is unavailable."
         )
+
         print(
             "Paper-live signal requires a real "
             "5-minute candle."
         )
+
         print()
 
         return
@@ -238,7 +241,7 @@ def run_once():
     # 3. TIME VALIDATION
     # ======================================================
 
-    coinbase_seconds = btc.get(
+    btc_seconds = btc.get(
         "seconds_remaining"
     )
 
@@ -246,7 +249,7 @@ def run_once():
         "seconds_remaining"
     )
 
-    if coinbase_seconds is None:
+    if btc_seconds is None:
 
         print("NO TRADE")
         print(
@@ -264,9 +267,8 @@ def run_once():
 
         return
 
-
     seconds_remaining = min(
-        float(coinbase_seconds),
+        float(btc_seconds),
         float(polymarket_seconds)
     )
 
@@ -309,6 +311,7 @@ def run_once():
     if market_price is None:
 
         print("NO TRADE")
+
         print(
             f"Reason: No Polymarket price found "
             f"for {expected_side}."
@@ -357,22 +360,20 @@ def run_once():
     print()
 
 
+    # IMPORTANT:
+    # Use ONLY parameters supported by the existing
+    # strategy.py evaluate() function.
+
     result = evaluate(
         btc_open=float(
             btc["btc_open"]
         ),
-
         btc_current=float(
             btc["btc_current"]
         ),
-
         market_price=market_price,
-
         seconds_remaining=seconds_remaining,
-
-        bankroll=PAPER_BANKROLL,
-
-        daily_volatility=DAILY_VOLATILITY
+        bankroll=PAPER_BANKROLL
     )
 
 
@@ -471,6 +472,7 @@ def run_once():
         print("NO ORDER WAS SENT.")
         print("NO WALLET WAS USED.")
         print("NO MONEY WAS USED.")
+
         print()
 
     else:
