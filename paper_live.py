@@ -1,6 +1,8 @@
 """
 Polymarket BTC 5-Minute PAPER LIVE SIGNAL ENGINE
 
+ONE-SHOT LIVE TEST
+
 PAPER / READ-ONLY ONLY
 
 - Uses live public Coinbase BTC data
@@ -13,7 +15,6 @@ PAPER / READ-ONLY ONLY
 - NO real trading
 """
 
-import time
 from datetime import datetime, timezone
 
 from market_data import get_market_data as get_coinbase_data
@@ -26,8 +27,6 @@ from strategy import evaluate
 # ============================================================
 
 PAPER_BANKROLL = 100.00
-
-LOOP_INTERVAL_SECONDS = 10
 
 # Same conservative volatility assumption
 # currently used by strategy.py.
@@ -98,6 +97,10 @@ def print_header():
     print("=" * 70)
 
     print(
+        "ONE-SHOT LIVE TEST"
+    )
+
+    print(
         "PAPER ONLY"
     )
 
@@ -135,6 +138,8 @@ def run_once():
     No trade is executed.
     """
 
+    print_header()
+
     print()
     print(
         f"UTC: {utc_now()}"
@@ -155,17 +160,10 @@ def run_once():
     # DATA QUALITY CHECK
     # --------------------------------------------------------
     #
-    # market_data.py has a fallback which uses the current
-    # BTC ticker price as the temporary opening price when
-    # the Coinbase 5-minute candle cannot be retrieved.
+    # market_data.py can use the current ticker price
+    # as a fallback if the 5-minute candle is unavailable.
     #
-    # That fallback is useful for diagnostics, but must NOT
-    # be used for paper signal generation.
-    #
-    # Therefore:
-    #
-    # REAL 5m CANDLE  -> continue
-    # FALLBACK         -> NO SIGNAL
+    # That fallback MUST NOT be used for signal generation.
     #
 
     if coinbase.get(
@@ -195,16 +193,32 @@ def run_once():
         )
 
         print(
-            "Waiting for valid Coinbase 5m candle..."
+            "A valid 5-minute opening price is required."
         )
 
         print("=" * 70)
+
+        print()
+        print(
+            "ONE-SHOT TEST COMPLETE"
+        )
+
+        print(
+            "NO REAL TRADING WAS PERFORMED."
+        )
 
         return None
 
     # --------------------------------------------------------
     # VALID COINBASE DATA
     # --------------------------------------------------------
+
+    print()
+    print(
+        "COINBASE BTC DATA"
+    )
+
+    print("-" * 70)
 
     print(
         f"BTC 5m Open:       "
@@ -227,6 +241,22 @@ def run_once():
     )
 
     print(
+        f"Window start:      "
+        f"{datetime.fromtimestamp("
+        f"coinbase['window_start'], "
+        f"tz=timezone.utc"
+        f")}"
+    )
+
+    print(
+        f"Window end:        "
+        f"{datetime.fromtimestamp("
+        f"coinbase['window_end'], "
+        f"tz=timezone.utc"
+        f")}"
+    )
+
+    print(
         f"Data source:       "
         f"{coinbase['source']}"
     )
@@ -244,12 +274,18 @@ def run_once():
 
     print()
     print(
-        f"Market: "
+        "POLYMARKET MARKET"
+    )
+
+    print("-" * 70)
+
+    print(
+        f"Market:            "
         f"{polymarket.get('market_slug')}"
     )
 
     print(
-        f"Question: "
+        f"Question:          "
         f"{polymarket.get('question')}"
     )
 
@@ -258,21 +294,17 @@ def run_once():
         f"{polymarket.get('seconds_remaining')}"
     )
 
-    # --------------------------------------------------------
-    # POLYMARKET PRICES
-    # --------------------------------------------------------
-
-    outcome_prices = polymarket.get(
-        "outcome_prices",
-        {},
-    )
-
     print()
     print(
         "POLYMARKET PRICES"
     )
 
     print("-" * 70)
+
+    outcome_prices = polymarket.get(
+        "outcome_prices",
+        {},
+    )
 
     for outcome, price in outcome_prices.items():
 
@@ -295,12 +327,10 @@ def run_once():
             )
 
     # --------------------------------------------------------
-    # SYNCHRONIZED REMAINING TIME
+    # SYNCHRONIZED TIME
     # --------------------------------------------------------
     #
-    # Use the smaller value so that we never evaluate
-    # a market beyond the time remaining reported by
-    # either data source.
+    # Use the smaller remaining time from both sources.
     #
 
     seconds_remaining = min(
@@ -314,17 +344,8 @@ def run_once():
     )
 
     # --------------------------------------------------------
-    # DETERMINE EXPECTED SIDE
+    # BTC DIRECTION
     # --------------------------------------------------------
-    #
-    # This mirrors the direction logic in strategy.py.
-    #
-    # Positive BTC movement -> UP
-    # Negative BTC movement -> DOWN
-    #
-    # The actual signal decision remains inside
-    # strategy.evaluate().
-    #
 
     movement = coinbase[
         "movement_percent"
@@ -342,8 +363,19 @@ def run_once():
 
         expected_side = "NONE"
 
+    print()
+    print(
+        f"BTC Direction:    "
+        f"{expected_side}"
+    )
+
+    print(
+        f"Evaluation time:  "
+        f"{seconds_remaining}s remaining"
+    )
+
     # --------------------------------------------------------
-    # EXACT ZERO MOVEMENT
+    # ZERO MOVEMENT
     # --------------------------------------------------------
 
     if expected_side == "NONE":
@@ -352,25 +384,34 @@ def run_once():
         print("=" * 70)
 
         print(
-            "PAPER SIGNAL"
+            "PAPER SIGNAL RESULT"
         )
 
         print("=" * 70)
 
         print(
-            "NO TRADE"
+            "Signal:            NO"
         )
 
         print(
-            "Reason: BTC movement is exactly zero."
+            "Reason:            BTC movement is exactly zero."
         )
 
         print("=" * 70)
+
+        print()
+        print(
+            "ONE-SHOT TEST COMPLETE"
+        )
+
+        print(
+            "NO REAL TRADING WAS PERFORMED."
+        )
 
         return None
 
     # --------------------------------------------------------
-    # GET CORRECT POLYMARKET PRICE
+    # CORRECT POLYMARKET PRICE
     # --------------------------------------------------------
 
     market_price = get_market_price(
@@ -384,27 +425,41 @@ def run_once():
         print("=" * 70)
 
         print(
-            "PAPER SIGNAL ERROR"
+            "PAPER SIGNAL RESULT"
         )
 
         print("=" * 70)
 
         print(
-            f"Missing Polymarket price for "
-            f"{expected_side}."
+            "Signal:            NO"
         )
 
         print(
-            "NO TRADE"
+            f"Reason:            "
+            f"Polymarket {expected_side} price unavailable."
         )
 
         print("=" * 70)
+
+        print()
+        print(
+            "ONE-SHOT TEST COMPLETE"
+        )
+
+        print(
+            "NO REAL TRADING WAS PERFORMED."
+        )
 
         return None
 
     # --------------------------------------------------------
-    # STRATEGY EVALUATION
+    # STRATEGY
     # --------------------------------------------------------
+
+    print()
+    print(
+        "Running strategy evaluation..."
+    )
 
     result = evaluate(
         btc_open=coinbase[
@@ -425,7 +480,7 @@ def run_once():
     )
 
     # --------------------------------------------------------
-    # RESULT
+    # FINAL RESULT
     # --------------------------------------------------------
 
     print()
@@ -463,7 +518,7 @@ def run_once():
     )
 
     print(
-        f"Kelly:             "
+        f"Kelly:              "
         f"{result.kelly_fraction:.4%}"
     )
 
@@ -484,88 +539,71 @@ def run_once():
 
     print("=" * 70)
 
+    # --------------------------------------------------------
+    # IMPORTANT SAFETY MESSAGE
+    # --------------------------------------------------------
+
+    if result.signal:
+
+        print()
+        print(
+            "PAPER TRADE SIGNAL DETECTED"
+        )
+
+        print(
+            f"Side:              {result.side}"
+        )
+
+        print(
+            f"Paper position:    "
+            f"${result.position_size:.2f}"
+        )
+
+        print(
+            "IMPORTANT:"
+        )
+
+        print(
+            "This is ONLY a paper signal."
+        )
+
+        print(
+            "NO ORDER WAS PLACED."
+        )
+
+    else:
+
+        print()
+        print(
+            "NO PAPER TRADE SIGNAL"
+        )
+
+    print()
+    print("=" * 70)
+
     print(
-        "PAPER ONLY - NO TRADE EXECUTED"
+        "ONE-SHOT TEST COMPLETE"
+    )
+
+    print(
+        "NO REAL TRADING WAS PERFORMED."
+    )
+
+    print(
+        "NO API KEYS"
+    )
+
+    print(
+        "NO WALLET"
+    )
+
+    print(
+        "NO REAL ORDERS"
     )
 
     print("=" * 70)
 
     return result
-
-
-# ============================================================
-# CONTINUOUS PAPER LIVE LOOP
-# ============================================================
-
-def run_live():
-    """
-    Continuously monitor the current BTC 5-minute market.
-
-    This function NEVER places orders.
-    """
-
-    print_header()
-
-    print()
-    print(
-        "Starting PAPER LIVE monitoring..."
-    )
-
-    print(
-        f"Refresh interval: "
-        f"{LOOP_INTERVAL_SECONDS}s"
-    )
-
-    print()
-
-    while True:
-
-        try:
-
-            run_once()
-
-        except KeyboardInterrupt:
-
-            print()
-            print("=" * 70)
-
-            print(
-                "PAPER LIVE STOPPED"
-            )
-
-            print(
-                "No real trading was performed."
-            )
-
-            print("=" * 70)
-
-            return 0
-
-        except Exception as exc:
-
-            print()
-            print("=" * 70)
-
-            print(
-                "PAPER LIVE ERROR"
-            )
-
-            print("=" * 70)
-
-            print(
-                f"{type(exc).__name__}: {exc}"
-            )
-
-            print()
-            print(
-                "Waiting before retry..."
-            )
-
-            print("=" * 70)
-
-        time.sleep(
-            LOOP_INTERVAL_SECONDS
-        )
 
 
 # ============================================================
@@ -576,9 +614,24 @@ if __name__ == "__main__":
 
     try:
 
-        raise SystemExit(
-            run_live()
+        run_once()
+
+    except KeyboardInterrupt:
+
+        print()
+        print("=" * 70)
+
+        print(
+            "PAPER LIVE TEST INTERRUPTED"
         )
+
+        print(
+            "NO REAL TRADING WAS PERFORMED."
+        )
+
+        print("=" * 70)
+
+        raise SystemExit(0)
 
     except Exception as exc:
 
@@ -586,7 +639,7 @@ if __name__ == "__main__":
         print("=" * 70)
 
         print(
-            "FATAL PAPER LIVE ERROR"
+            "PAPER LIVE ERROR"
         )
 
         print("=" * 70)
@@ -596,9 +649,10 @@ if __name__ == "__main__":
         )
 
         print()
-
         print(
             "NO REAL TRADING WAS PERFORMED."
         )
+
+        print("=" * 70)
 
         raise SystemExit(1)
