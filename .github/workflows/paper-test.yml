@@ -1,50 +1,102 @@
-name: Paper Trader Tests
+name: Polymarket BTC Paper Trader
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 jobs:
-  test:
+  paper-trader:
     runs-on: ubuntu-latest
 
     steps:
 
-      - name: Checkout
+      # ======================================================
+      # CHECKOUT
+      # ======================================================
+
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+
+      # ======================================================
+      # PYTHON
+      # ======================================================
+
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+
+      # ======================================================
+      # DEPENDENCIES
+      # ======================================================
+
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run paper trader tests
-        run: |
-          python test_paper.py
 
-      - name: Test live public BTC market data
-        run: |
-          python market_data.py
+      # ======================================================
+      # STRATEGY TEST
+      # ======================================================
 
-      - name: Test live public Polymarket BTC market data
-        run: |
-          python polymarket_data.py
+      - name: Run strategy.py
+        run: python strategy.py
 
-      - name: Test Kraken public BTC 5m data
-        run: |
-          python kraken_test.py
 
-      - name: Verify paper mode
+      # ======================================================
+      # PAPER TRADER TEST SUITE
+      # ======================================================
+
+      - name: Run test_paper.py
+        run: python test_paper.py
+
+
+      # ======================================================
+      # COINBASE MARKET DATA
+      # ======================================================
+
+      - name: Run market_data.py
+        run: python market_data.py
+
+
+      # ======================================================
+      # POLYMARKET MARKET DATA
+      # ======================================================
+
+      - name: Run polymarket_data.py
+        run: python polymarket_data.py
+
+
+      # ======================================================
+      # KRAKEN CONTROL TEST
+      # ======================================================
+
+      - name: Run kraken_test.py
+        run: python kraken_test.py
+
+
+      # ======================================================
+      # PAPER LIVE SIGNAL
+      # ======================================================
+
+      - name: Run paper_live.py
+        run: python paper_live.py
+
+
+      # ======================================================
+      # SAFETY INFORMATION
+      # ======================================================
+
+      - name: Paper trading safety check
         run: |
-          echo "=========================================="
-          echo "PAPER MODE VERIFIED"
-          echo "NO REAL ORDERS"
+          echo "=================================================="
+          echo "PAPER TRADING ONLY"
+          echo "=================================================="
           echo "NO API KEYS"
           echo "NO WALLET"
-          echo "=========================================="
+          echo "NO PRIVATE KEYS"
+          echo "NO REAL ORDERS"
+          echo "NO REAL TRADING"
+          echo "=================================================="
