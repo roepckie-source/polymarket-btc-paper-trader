@@ -54,7 +54,7 @@ jobs:
 
 
       # ======================================================
-      # COINBASE MARKET DATA
+      # INITIAL MARKET DATA TEST
       # ======================================================
 
       - name: Run market_data.py
@@ -78,11 +78,45 @@ jobs:
 
 
       # ======================================================
-      # PAPER LIVE SIGNAL
+      # 30 MINUTE PAPER LIVE RUN
       # ======================================================
 
-      - name: Run paper_live.py
-        run: python paper_live.py
+      - name: Run paper_live.py for 30 minutes
+        run: |
+
+          echo "=================================================="
+          echo "30 MINUTE POLYMARKET BTC PAPER RUN"
+          echo "=================================================="
+          echo "PAPER ONLY"
+          echo "NO REAL TRADING"
+          echo "=================================================="
+          echo ""
+
+          for i in {1..7}
+          do
+
+            echo ""
+            echo "##################################################"
+            echo "PAPER LIVE RUN $i / 7"
+            echo "##################################################"
+            echo ""
+
+            python paper_live.py
+
+            if [ "$i" -lt 7 ]; then
+              echo ""
+              echo "Waiting 5 minutes until next 5-minute window..."
+              echo ""
+
+              sleep 300
+            fi
+
+          done
+
+          echo ""
+          echo "=================================================="
+          echo "30 MINUTE PAPER RUN COMPLETE"
+          echo "=================================================="
 
 
       # ======================================================
