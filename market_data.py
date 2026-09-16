@@ -1,9 +1,14 @@
 """
-Coinbase BTC 5-Minute Market Data
+BTC 5-Minute Market Data
 
 PAPER / READ-ONLY ONLY
 
-- Public Coinbase API
+Primary 5-minute candle:
+- Kraken public API
+
+Current BTC price:
+- Coinbase public API
+
 - No API keys
 - No wallet
 - No private keys
@@ -17,15 +22,26 @@ from datetime import datetime, timezone
 import requests
 
 
+# ==========================================================
+# COINBASE
+# ==========================================================
+
 TICKER_URL = (
     "https://api.exchange.coinbase.com/"
     "products/BTC-USD/ticker"
 )
 
-CANDLES_URL = (
-    "https://api.exchange.coinbase.com/"
-    "products/BTC-USD/candles"
+
+# ==========================================================
+# KRAKEN
+# ==========================================================
+
+KRAKEN_OHLC_URL = (
+    "https://api.kraken.com/0/public/OHLC"
 )
+
+KRAKEN_PAIR = "XBTUSD"
+
 
 TIMEOUT = 10
 FIVE_MINUTES = 300
@@ -47,6 +63,10 @@ def current_window():
 
     return start, end
 
+
+# ==========================================================
+# COINBASE CURRENT PRICE
+# ==========================================================
 
 def get_current_price():
     """
@@ -72,43 +92,37 @@ def get_current_price():
     return float(price)
 
 
+# ==========================================================
+# KRAKEN 5-MINUTE OPEN
+# ==========================================================
+
 def get_5m_open(start_timestamp):
     """
     Get the opening price of the current
-    5-minute Coinbase candle.
+    5-minute BTC candle from Kraken.
 
-    Coinbase candle format:
+    Kraken OHLC format:
 
     [
         timestamp,
-        low,
-        high,
         open,
+        high,
+        low,
         close,
-        volume
+        vwap,
+        volume,
+        count
     ]
     """
 
-    end_timestamp = start_timestamp + FIVE_MINUTES
-
-    start_dt = datetime.fromtimestamp(
-        start_timestamp,
-        timezone.utc,
-    )
-
-    end_dt = datetime.fromtimestamp(
-        end_timestamp,
-        timezone.utc,
-    )
-
     params = {
-        "granularity": FIVE_MINUTES,
-        "start": start_dt.isoformat(),
-        "end": end_dt.isoformat(),
+        "pair": KRAKEN_PAIR,
+        "interval": 5,
+        "since": start_timestamp,
     }
 
     response = requests.get(
-        CANDLES_URL,
+        KRAKEN_OHLC_URL,
         params=params,
         timeout=TIMEOUT,
     )
@@ -117,36 +131,63 @@ def get_5m_open(start_timestamp):
 
     data = response.json()
 
-    if not isinstance(data, list):
+    # ------------------------------------------------------
+    # Kraken API error handling
+    # ------------------------------------------------------
+
+    errors = data.get("error", [])
+
+    if errors:
         raise RuntimeError(
-            "Unexpected market data response."
+            "Kraken API error: "
+            + ", ".join(str(error) for error in errors)
         )
 
-    if not data:
+    result = data.get("result")
+
+    if not isinstance(result, dict):
         raise RuntimeError(
-            "No 5-minute candle data returned."
+            "Unexpected Kraken response."
         )
 
-    # ----------------------------------------------------------
-    # Parse all valid candles
-    # ----------------------------------------------------------
+    # Kraken normally returns XBTUSD.
+    # Search the first list containing OHLC candles.
+    candles = None
 
-    candles = []
+    for key, value in result.items():
 
-    for candle in data:
+        if key == "last":
+            continue
+
+        if isinstance(value, list):
+            candles = value
+            break
+
+    if not candles:
+        raise RuntimeError(
+            "No 5-minute candle data returned by Kraken."
+        )
+
+    # ------------------------------------------------------
+    # Parse candles
+    # ------------------------------------------------------
+
+    valid = []
+
+    for candle in candles:
 
         if not isinstance(candle, list):
             continue
 
-        if len(candle) < 6:
+        if len(candle) < 8:
             continue
 
         try:
 
-            timestamp = int(candle[0])
-            opening = float(candle[3])
+            timestamp = int(float(candle[0]))
+            opening = float(candle[1])
 
-            candles.append(
+            valid.append(
                 {
                     "timestamp": timestamp,
                     "open": opening,
@@ -157,29 +198,28 @@ def get_5m_open(start_timestamp):
 
             continue
 
-    if not candles:
+    if not valid:
         raise RuntimeError(
-            "No valid 5-minute candles returned."
+            "No valid Kraken 5-minute candles found."
         )
 
-    # ----------------------------------------------------------
+    # ------------------------------------------------------
     # Exact candle
-    # ----------------------------------------------------------
+    # ------------------------------------------------------
 
-    for candle in candles:
+    for candle in valid:
 
         if candle["timestamp"] == start_timestamp:
 
             return candle["open"]
 
-    # ----------------------------------------------------------
-    # Coinbase sometimes returns candles around the
-    # requested interval. Select the closest candle,
-    # but only if it is reasonably close.
-    # ----------------------------------------------------------
+
+    # ------------------------------------------------------
+    # Closest candle
+    # ------------------------------------------------------
 
     closest = min(
-        candles,
+        valid,
         key=lambda candle: abs(
             candle["timestamp"] - start_timestamp
         ),
@@ -193,10 +233,15 @@ def get_5m_open(start_timestamp):
 
         return closest["open"]
 
+
     raise RuntimeError(
-        "No suitable 5-minute candle found."
+        "No suitable Kraken 5-minute candle found."
     )
 
+
+# ==========================================================
+# COMPLETE MARKET DATA
+# ==========================================================
 
 def get_market_data():
 
@@ -204,44 +249,17 @@ def get_market_data():
         current_window()
     )
 
+    # Current price from Coinbase
     current_price = get_current_price()
 
-    try:
+    # 5-minute opening price from Kraken
+    btc_open = get_5m_open(
+        start_timestamp
+    )
 
-        btc_open = get_5m_open(
-            start_timestamp
-        )
-
-        source = "Coinbase 5m candle"
-
-    except Exception as candle_error:
-
-        print()
-        print(
-            "WARNING: Coinbase 5m candle unavailable."
-        )
-
-        print(
-            f"Reason: {candle_error}"
-        )
-
-        print(
-            "Using current BTC price as temporary "
-            "open fallback."
-        )
-
-        print()
-
-        btc_open = current_price
-
-        source = "Coinbase ticker fallback"
-
-    # ----------------------------------------------------------
-    # Calculate BTC movement
-    # ----------------------------------------------------------
+    source = "Kraken 5m candle + Coinbase ticker"
 
     if btc_open <= 0:
-
         raise RuntimeError(
             "Invalid BTC opening price."
         )
@@ -267,6 +285,10 @@ def get_market_data():
         "source": source,
     }
 
+
+# ==========================================================
+# PRINT
+# ==========================================================
 
 def print_market_data(data):
 
@@ -327,11 +349,15 @@ def print_market_data(data):
     print("=" * 60)
 
 
+# ==========================================================
+# TEST
+# ==========================================================
+
 def run_test():
 
     print(
-        "Connecting to Coinbase public BTC "
-        "market data..."
+        "Connecting to Kraken + Coinbase "
+        "public BTC market data..."
     )
 
     data = get_market_data()
@@ -340,6 +366,10 @@ def run_test():
 
     return 0
 
+
+# ==========================================================
+# MAIN
+# ==========================================================
 
 if __name__ == "__main__":
 
@@ -353,7 +383,7 @@ if __name__ == "__main__":
 
         print()
         print(
-            "COINBASE REQUEST ERROR"
+            "MARKET DATA REQUEST ERROR"
         )
 
         print(exc)
