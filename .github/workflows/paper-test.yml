@@ -19,9 +19,17 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install dependencies
+        run: |
+          pip install requests
+
       - name: Run paper trader tests
         run: |
           python test_paper.py
+
+      - name: Test live public BTC market data
+        run: |
+          python market_data.py
 
       - name: Verify paper mode
         run: |
