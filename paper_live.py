@@ -29,9 +29,8 @@ PAPER_BANKROLL = 100.00
 
 LOOP_INTERVAL_SECONDS = 10
 
-# Strategy volatility assumption.
-# This is currently the same conservative default
-# used by strategy.py.
+# Same conservative volatility assumption
+# currently used by strategy.py.
 DAILY_VOLATILITY = 0.04
 
 
@@ -91,9 +90,11 @@ def print_header():
 
     print()
     print("=" * 70)
+
     print(
         "POLYMARKET BTC PAPER LIVE SIGNAL ENGINE"
     )
+
     print("=" * 70)
 
     print(
@@ -150,6 +151,61 @@ def run_once():
 
     coinbase = get_coinbase_data()
 
+    # --------------------------------------------------------
+    # DATA QUALITY CHECK
+    # --------------------------------------------------------
+    #
+    # market_data.py has a fallback which uses the current
+    # BTC ticker price as the temporary opening price when
+    # the Coinbase 5-minute candle cannot be retrieved.
+    #
+    # That fallback is useful for diagnostics, but must NOT
+    # be used for paper signal generation.
+    #
+    # Therefore:
+    #
+    # REAL 5m CANDLE  -> continue
+    # FALLBACK         -> NO SIGNAL
+    #
+
+    if coinbase.get(
+        "source"
+    ) != "Coinbase 5m candle":
+
+        print()
+        print("=" * 70)
+
+        print(
+            "PAPER SIGNAL"
+        )
+
+        print("=" * 70)
+
+        print(
+            "NO TRADE"
+        )
+
+        print(
+            "Reason: Coinbase 5m candle unavailable."
+        )
+
+        print(
+            f"Data source: "
+            f"{coinbase.get('source')}"
+        )
+
+        print(
+            "Waiting for valid Coinbase 5m candle..."
+        )
+
+        print("=" * 70)
+
+        return None
+
+    # --------------------------------------------------------
+    # VALID COINBASE DATA
+    # --------------------------------------------------------
+
     print(
         f"BTC 5m Open:       "
         f"${coinbase['btc_open']:,.2f}"
@@ -202,6 +258,10 @@ def run_once():
         f"{polymarket.get('seconds_remaining')}"
     )
 
+    # --------------------------------------------------------
+    # POLYMARKET PRICES
+    # --------------------------------------------------------
+
     outcome_prices = polymarket.get(
         "outcome_prices",
         {},
@@ -235,25 +295,36 @@ def run_once():
             )
 
     # --------------------------------------------------------
-    # USE COINBASE WINDOW
+    # SYNCHRONIZED REMAINING TIME
     # --------------------------------------------------------
+    #
+    # Use the smaller value so that we never evaluate
+    # a market beyond the time remaining reported by
+    # either data source.
+    #
 
     seconds_remaining = min(
-        coinbase["seconds_remaining"],
-        polymarket["seconds_remaining"],
+        coinbase[
+            "seconds_remaining"
+        ],
+
+        polymarket[
+            "seconds_remaining"
+        ],
     )
 
     # --------------------------------------------------------
-    # DETERMINE SIDE FROM BTC MOVEMENT
-    #
-    # This mirrors strategy.py:
-    #
-    # UP   if movement > 0
-    # DOWN if movement < 0
-    #
-    # We do not make a separate trading decision here.
-    # strategy.py remains the decision engine.
+    # DETERMINE EXPECTED SIDE
     # --------------------------------------------------------
+    #
+    # This mirrors the direction logic in strategy.py.
+    #
+    # Positive BTC movement -> UP
+    # Negative BTC movement -> DOWN
+    #
+    # The actual signal decision remains inside
+    # strategy.evaluate().
+    #
 
     movement = coinbase[
         "movement_percent"
@@ -272,17 +343,19 @@ def run_once():
         expected_side = "NONE"
 
     # --------------------------------------------------------
-    # NO MOVEMENT
+    # EXACT ZERO MOVEMENT
     # --------------------------------------------------------
 
     if expected_side == "NONE":
 
         print()
+        print("=" * 70)
+
         print(
             "PAPER SIGNAL"
         )
 
-        print("-" * 70)
+        print("=" * 70)
 
         print(
             "NO TRADE"
@@ -291,6 +364,8 @@ def run_once():
         print(
             "Reason: BTC movement is exactly zero."
         )
+
+        print("=" * 70)
 
         return None
 
@@ -306,11 +381,13 @@ def run_once():
     if market_price is None:
 
         print()
+        print("=" * 70)
+
         print(
             "PAPER SIGNAL ERROR"
         )
 
-        print("-" * 70)
+        print("=" * 70)
 
         print(
             f"Missing Polymarket price for "
@@ -320,6 +397,8 @@ def run_once():
         print(
             "NO TRADE"
         )
+
+        print("=" * 70)
 
         return None
 
@@ -346,7 +425,7 @@ def run_once():
     )
 
     # --------------------------------------------------------
-    # OUTPUT
+    # RESULT
     # --------------------------------------------------------
 
     print()
@@ -394,12 +473,12 @@ def run_once():
     )
 
     print(
-        f"Signal:             "
+        f"Signal:            "
         f"{'YES' if result.signal else 'NO'}"
     )
 
     print(
-        f"Reason:             "
+        f"Reason:            "
         f"{result.reason}"
     )
 
