@@ -2,31 +2,18 @@
 POLYMARKET BTC 5-MIN PAPER TRADER
 
 PAPER ONLY
+
 NO API KEYS
 NO WALLET
 NO PRIVATE KEYS
 NO REAL ORDERS
 NO REAL MONEY
-
-This module:
-- reads BTC market data
-- reads Polymarket 5-minute market data
-- evaluates the existing strategy
-- opens paper trades
-- stores open trades in CSV
-- resolves completed trades
-- calculates P&L
-- maintains a paper bankroll
 """
-
-from __future__ import annotations
 
 import csv
 import os
 from datetime import datetime, timezone
 
-from market_data import get_market_data as get_btc_market_data
-from polymarket_data import get_market_data as get_polymarket_market_data
 from strategy import evaluate
 
 
@@ -43,35 +30,22 @@ EXPECTED_BTC_SOURCE = "Kraken 5m candle + Coinbase ticker"
 
 
 # ============================================================
-# SAFETY
+# TIME
 # ============================================================
 
-print("=" * 70)
-print("POLYMARKET BTC 5-MIN PAPER TRADER")
-print("=" * 70)
-print()
-print("PAPER ONLY")
-print("NO API KEYS")
-print("NO WALLET")
-print("NO PRIVATE KEYS")
-print("NO REAL ORDERS")
-print("NO REAL MONEY")
-print()
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-def utc_now() -> str:
+def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def load_bankroll() -> float:
-    """
-    Load the current paper bankroll.
+# ============================================================
+# BANKROLL
+# ============================================================
 
-    If no state exists yet, start with PAPER_BANKROLL.
+def load_bankroll():
+    """
+    Load current paper bankroll.
+
+    If no state file exists, start with PAPER_BANKROLL.
     """
 
     if not os.path.exists(STATE_FILE):
@@ -80,44 +54,53 @@ def load_bankroll() -> float:
     try:
         with open(STATE_FILE, "r", newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
-            rows = list(reader)
 
-        if not rows:
-            return PAPER_BANKROLL
+            for row in reader:
+                value = row.get("bankroll")
 
-        return float(rows[-1]["bankroll"])
+                if value is not None:
+                    return float(value)
 
-    except Exception as exc:
-        print(f"WARNING: Could not load bankroll: {exc}")
-        return PAPER_BANKROLL
+    except Exception as e:
+        print(f"WARNING: Could not load bankroll: {e}")
+
+    return PAPER_BANKROLL
 
 
-def save_bankroll(bankroll: float) -> None:
+def save_bankroll(bankroll):
     """
     Save current paper bankroll.
     """
 
     with open(STATE_FILE, "w", newline="", encoding="utf-8") as f:
+
         writer = csv.DictWriter(
             f,
-            fieldnames=["timestamp", "bankroll"],
+            fieldnames=[
+                "updated_at",
+                "bankroll",
+            ],
         )
 
         writer.writeheader()
 
         writer.writerow(
             {
-                "timestamp": utc_now(),
+                "updated_at": utc_now(),
                 "bankroll": f"{bankroll:.8f}",
             }
         )
 
 
+# ============================================================
+# OPEN TRADE
+# ============================================================
+
 def load_open_trade():
     """
     Return the currently open paper trade.
 
-    Only one position is allowed.
+    Only one open trade is allowed.
     """
 
     if not os.path.exists(TRADES_FILE):
@@ -125,233 +108,338 @@ def load_open_trade():
 
     try:
         with open(TRADES_FILE, "r", newline="", encoding="utf-8") as f:
+
             reader = csv.DictReader(f)
-            rows = list(reader)
 
-        for row in reversed(rows):
-            if row.get("status") == "OPEN":
-                return row
+            for row in reader:
 
-    except Exception as exc:
-        print(f"WARNING: Could not read trade file: {exc}")
+                if row.get("status") == "OPEN":
+                    return row
+
+    except Exception as e:
+        print(f"WARNING: Could not load open trade: {e}")
 
     return None
 
 
-def append_trade(row: dict) -> None:
-    """
-    Append a trade to the CSV ledger.
-    """
+# ============================================================
+# TRADE STORAGE
+# ============================================================
 
-    fieldnames = [
-        "trade_id",
-        "status",
-        "opened_at",
-        "closed_at",
-        "window_start",
-        "window_end",
-        "side",
-        "btc_open",
-        "btc_entry",
-        "btc_close",
-        "btc_move_pct",
-        "market_price",
-        "contracts",
-        "position_size",
-        "probability",
-        "edge",
-        "kelly_fraction",
-        "pnl",
-        "bankroll_after",
-        "reason",
-    ]
+TRADE_FIELDS = [
+    "trade_id",
+    "status",
+    "opened_at",
+    "resolved_at",
+
+    "window_start",
+    "window_end",
+
+    "side",
+
+    "btc_open",
+    "btc_entry",
+
+    "btc_close",
+
+    "market_price",
+    "contracts",
+
+    "probability",
+    "edge",
+    "kelly",
+
+    "position_size",
+
+    "payout",
+    "pnl",
+
+    "bankroll_before",
+    "bankroll_after",
+
+    "result",
+]
+
+
+def append_trade(trade):
+    """
+    Append one trade to paper_trades.csv.
+    """
 
     file_exists = os.path.exists(TRADES_FILE)
 
     with open(TRADES_FILE, "a", newline="", encoding="utf-8") as f:
+
         writer = csv.DictWriter(
             f,
-            fieldnames=fieldnames,
-            extrasaction="ignore",
+            fieldnames=TRADE_FIELDS,
         )
 
         if not file_exists:
             writer.writeheader()
 
-        writer.writerow(row)
+        writer.writerow(trade)
 
 
-def rewrite_trades(rows: list[dict]) -> None:
+def rewrite_trades(trades):
     """
-    Rewrite the complete trade ledger.
-    Used when an OPEN trade becomes CLOSED.
-    """
+    Rewrite complete trade history.
 
-    fieldnames = [
-        "trade_id",
-        "status",
-        "opened_at",
-        "closed_at",
-        "window_start",
-        "window_end",
-        "side",
-        "btc_open",
-        "btc_entry",
-        "btc_close",
-        "btc_move_pct",
-        "market_price",
-        "contracts",
-        "position_size",
-        "probability",
-        "edge",
-        "kelly_fraction",
-        "pnl",
-        "bankroll_after",
-        "reason",
-    ]
+    Used when resolving an existing OPEN trade.
+    """
 
     with open(TRADES_FILE, "w", newline="", encoding="utf-8") as f:
+
         writer = csv.DictWriter(
             f,
-            fieldnames=fieldnames,
+            fieldnames=TRADE_FIELDS,
         )
 
         writer.writeheader()
-        writer.writerows(rows)
+
+        for trade in trades:
+            writer.writerow(trade)
 
 
-def next_trade_id() -> int:
+def next_trade_id():
     """
-    Generate the next numeric trade ID.
+    Generate next sequential trade ID.
     """
 
     if not os.path.exists(TRADES_FILE):
         return 1
 
+    highest = 0
+
     try:
         with open(TRADES_FILE, "r", newline="", encoding="utf-8") as f:
+
             reader = csv.DictReader(f)
-            rows = list(reader)
 
-        ids = []
+            for row in reader:
 
-        for row in rows:
-            try:
-                ids.append(int(row["trade_id"]))
-            except Exception:
-                pass
+                try:
+                    trade_id = int(row.get("trade_id", 0))
+                    highest = max(highest, trade_id)
 
-        return max(ids, default=0) + 1
+                except (ValueError, TypeError):
+                    pass
 
     except Exception:
-        return 1
+        pass
+
+    return highest + 1
 
 
 # ============================================================
-# RESOLVE OPEN TRADE
+# RESOLVE TRADE
 # ============================================================
 
-def resolve_open_trade(open_trade: dict, btc: dict, bankroll: float) -> float:
+def resolve_open_trade(open_trade, new_market_data, bankroll):
     """
-    Resolve the previous 5-minute paper trade.
+    Resolve the previous 5-minute trade.
 
-    The new BTC candle provides the starting price of the
-    new window, which is used as the approximate closing
-    price of the previous window.
-
-    Payout:
-        winning UP/DOWN contract = $1.00
-        losing contract = $0.00
-
-    P&L:
-        WIN  = contracts * (1 - entry_price)
-        LOSS = -position_size
+    The new 5-minute candle open is used as the approximate
+    close of the previous window.
     """
 
-    print("=" * 70)
-    print("RESOLVING OPEN PAPER TRADE")
-    print("=" * 70)
-
-    trade_window = open_trade["window_start"]
-    current_window = str(btc["window_start"])
-
-    if trade_window == current_window:
-        print("Current window is still the trade window.")
-        print("Trade remains OPEN.")
-        print()
+    if open_trade is None:
         return bankroll
 
-    side = open_trade["side"]
+    previous_window_start = int(
+        float(open_trade["window_start"])
+    )
 
-    btc_open = float(open_trade["btc_open"])
-    btc_close = float(btc["btc_entry"])
+    current_window_start = int(
+        float(new_market_data["window_start"])
+    )
 
-    # The BTC value at the beginning of the new 5m candle
-    # is used as the close of the previous 5m candle.
-    btc_close = float(btc["btc_open"])
+    # --------------------------------------------------------
+    # Same window -> nothing to resolve
+    # --------------------------------------------------------
 
-    move_pct = ((btc_close - btc_open) / btc_open) * 100.0
+    if current_window_start <= previous_window_start:
 
-    if move_pct > 0:
-        winning_side = "UP"
-    else:
-        winning_side = "DOWN"
+        return bankroll
 
-    contracts = float(open_trade["contracts"])
-    position_size = float(open_trade["position_size"])
-    market_price = float(open_trade["market_price"])
+    # --------------------------------------------------------
+    # Previous BTC close
+    # --------------------------------------------------------
 
-    won = side == winning_side
+    btc_close = float(
+        new_market_data["btc_open"]
+    )
 
-    if won:
-        payout = contracts * 1.00
+    btc_open = float(
+        open_trade["btc_open"]
+    )
+
+    movement_percent = (
+        (btc_close - btc_open)
+        / btc_open
+        * 100.0
+    )
+
+    winning_side = (
+        "UP"
+        if movement_percent > 0
+        else "DOWN"
+    )
+
+    trade_side = open_trade["side"]
+
+    position_size = float(
+        open_trade["position_size"]
+    )
+
+    market_price = float(
+        open_trade["market_price"]
+    )
+
+    contracts = float(
+        open_trade["contracts"]
+    )
+
+    # --------------------------------------------------------
+    # Resolve WIN / LOSS
+    # --------------------------------------------------------
+
+    if trade_side == winning_side:
+
+        payout = contracts
         pnl = payout - position_size
         result = "WIN"
+
     else:
-        payout = 0.00
+
+        payout = 0.0
         pnl = -position_size
         result = "LOSS"
 
-    new_bankroll = bankroll + pnl
+    bankroll_before = bankroll
+    bankroll_after = bankroll + pnl
 
-    print(f"Trade ID:       {open_trade['trade_id']}")
-    print(f"Side:           {side}")
-    print(f"BTC Open:       ${btc_open:,.2f}")
-    print(f"BTC Close:      ${btc_close:,.2f}")
-    print(f"BTC Move:       {move_pct:+.4f}%")
-    print(f"Entry Price:    ${market_price:.4f}")
-    print(f"Contracts:      {contracts:.4f}")
-    print(f"Position Size:  ${position_size:.2f}")
-    print()
-    print(f"RESULT:         {result}")
-    print(f"P&L:            ${pnl:+.2f}")
-    print(f"Bankroll:       ${new_bankroll:.2f}")
-    print()
+    # --------------------------------------------------------
+    # Update trade history
+    # --------------------------------------------------------
 
-    # Rewrite trade ledger with CLOSED trade
-    with open(TRADES_FILE, "r", newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+    trades = []
 
-    for row in rows:
-        if row["trade_id"] == open_trade["trade_id"]:
-            row["status"] = result
-            row["closed_at"] = utc_now()
-            row["btc_close"] = f"{btc_close:.8f}"
-            row["btc_move_pct"] = f"{move_pct:.8f}"
-            row["pnl"] = f"{pnl:.8f}"
-            row["bankroll_after"] = f"{new_bankroll:.8f}"
-            row["reason"] = (
-                f"{result}: winning side was {winning_side}"
+    if os.path.exists(TRADES_FILE):
+
+        try:
+
+            with open(
+                TRADES_FILE,
+                "r",
+                newline="",
+                encoding="utf-8",
+            ) as f:
+
+                reader = csv.DictReader(f)
+
+                for row in reader:
+                    trades.append(row)
+
+        except Exception as e:
+
+            print(
+                f"WARNING: Could not read trade history: {e}"
             )
 
-    rewrite_trades(rows)
-    save_bankroll(new_bankroll)
+    resolved = False
 
-    print("Trade successfully closed.")
+    for trade in trades:
+
+        if (
+            trade.get("trade_id")
+            == open_trade.get("trade_id")
+            and trade.get("status") == "OPEN"
+        ):
+
+            trade["status"] = result
+            trade["resolved_at"] = utc_now()
+
+            trade["btc_close"] = (
+                f"{btc_close:.2f}"
+            )
+
+            trade["payout"] = (
+                f"{payout:.8f}"
+            )
+
+            trade["pnl"] = (
+                f"{pnl:.8f}"
+            )
+
+            trade["bankroll_before"] = (
+                f"{bankroll_before:.8f}"
+            )
+
+            trade["bankroll_after"] = (
+                f"{bankroll_after:.8f}"
+            )
+
+            trade["result"] = result
+
+            resolved = True
+
+    if resolved:
+        rewrite_trades(trades)
+
+    # --------------------------------------------------------
+    # Save bankroll
+    # --------------------------------------------------------
+
+    save_bankroll(bankroll_after)
+
+    # --------------------------------------------------------
+    # Output
+    # --------------------------------------------------------
+
+    print()
+    print("=" * 70)
+    print("PAPER TRADE RESOLVED")
+    print("=" * 70)
+
+    print(f"Trade ID:       {open_trade['trade_id']}")
+    print(f"Side:           {trade_side}")
+
+    print(f"BTC Open:       ${btc_open:,.2f}")
+    print(f"BTC Close:      ${btc_close:,.2f}")
+
+    print(
+        f"BTC Movement:   {movement_percent:+.4f}%"
+    )
+
+    print(f"Winning Side:   {winning_side}")
+    print(f"Result:         {result}")
+
+    print(
+        f"Position:       ${position_size:.2f}"
+    )
+
+    print(
+        f"Contracts:      {contracts:.4f}"
+    )
+
+    print(
+        f"Payout:         ${payout:.2f}"
+    )
+
+    print(
+        f"P&L:            ${pnl:+.2f}"
+    )
+
+    print(
+        f"Bankroll:       ${bankroll_before:.2f}"
+        f" -> ${bankroll_after:.2f}"
+    )
+
+    print("=" * 70)
     print()
 
-    return new_bankroll
+    return bankroll_after
 
 
 # ============================================================
@@ -359,266 +447,628 @@ def resolve_open_trade(open_trade: dict, btc: dict, bankroll: float) -> float:
 # ============================================================
 
 def open_paper_trade(
-    btc: dict,
-    poly: dict,
     result,
-    bankroll: float,
-) -> None:
+    btc_data,
+    market_data,
+    bankroll,
+):
     """
     Open a new paper trade.
+
+    This function NEVER submits an order.
     """
+
+    position_size = float(
+        result.position_size
+    )
+
+    market_price = float(
+        result.market_price
+    )
 
     side = result.side
 
+    btc_open = float(
+        btc_data["btc_open"]
+    )
+
+    btc_current = float(
+        btc_data["btc_current"]
+    )
+
+    window_start = int(
+        btc_data["window_start"]
+    )
+
+    window_end = int(
+        btc_data["window_end"]
+    )
+
+    # --------------------------------------------------------
+    # Safety validation
+    # --------------------------------------------------------
+
+    if position_size <= 0:
+        print(
+            "ERROR: Invalid position size."
+        )
+        return bankroll
+
+    if market_price <= 0:
+        print(
+            "ERROR: Invalid market price."
+        )
+        return bankroll
+
     if side not in ("UP", "DOWN"):
-        print("Invalid side. No trade opened.")
-        return
-
-    market_price = float(result.market_price)
-
-    btc_open = float(btc["btc_open"])
-    btc_current = float(btc["btc_current"])
-
-    movement_pct = (
-        (btc_current - btc_open) / btc_open
-    ) * 100.0
-
-    position_size = float(result.position_size)
+        print(
+            "ERROR: Invalid trade side."
+        )
+        return bankroll
 
     if position_size > bankroll:
-        position_size = bankroll
+        print(
+            "ERROR: Position size exceeds bankroll."
+        )
+        return bankroll
 
-    contracts = position_size / market_price
+    # --------------------------------------------------------
+    # Calculate contracts
+    # --------------------------------------------------------
+
+    contracts = (
+        position_size / market_price
+    )
 
     trade_id = next_trade_id()
 
+    # --------------------------------------------------------
+    # Create OPEN trade
+    # --------------------------------------------------------
+
+    trade = {
+        "trade_id": trade_id,
+        "status": "OPEN",
+
+        "opened_at": utc_now(),
+        "resolved_at": "",
+
+        "window_start": window_start,
+        "window_end": window_end,
+
+        "side": side,
+
+        "btc_open": f"{btc_open:.2f}",
+        "btc_entry": f"{btc_current:.2f}",
+
+        "btc_close": "",
+
+        "market_price": f"{market_price:.8f}",
+        "contracts": f"{contracts:.8f}",
+
+        "probability": (
+            f"{float(result.probability):.8f}"
+        ),
+
+        "edge": (
+            f"{float(result.edge):.8f}"
+        ),
+
+        "kelly": (
+            f"{float(result.kelly_fraction):.8f}"
+        ),
+
+        "position_size": (
+            f"{position_size:.8f}"
+        ),
+
+        "payout": "",
+        "pnl": "",
+
+        "bankroll_before": (
+            f"{bankroll:.8f}"
+        ),
+
+        "bankroll_after": "",
+
+        "result": "",
+    }
+
+    append_trade(trade)
+
+    # --------------------------------------------------------
+    # IMPORTANT:
+    #
+    # The position is reserved in the paper simulation.
+    #
+    # We do NOT remove it permanently from bankroll here.
+    # The final P&L is applied when the trade resolves.
+    # --------------------------------------------------------
+
+    print()
     print("=" * 70)
     print("PAPER TRADE OPENED")
     print("=" * 70)
 
     print(f"Trade ID:       {trade_id}")
     print(f"Side:           {side}")
-    print(f"BTC Open:       ${btc_open:,.2f}")
-    print(f"BTC Entry:      ${btc_current:,.2f}")
-    print(f"BTC Move:       {movement_pct:+.4f}%")
-    print(f"Market Price:   ${market_price:.4f}")
-    print(f"Probability:    {result.probability:.2%}")
-    print(f"Edge:           {result.edge:.2%}")
-    print(f"Kelly:          {result.kelly_fraction:.2%}")
-    print(f"Position Size:  ${position_size:.2f}")
-    print(f"Contracts:      {contracts:.4f}")
-    print(f"Bankroll:       ${bankroll:.2f}")
-    print()
-    print("NO REAL ORDER WAS SENT.")
-    print()
 
-    append_trade(
-        {
-            "trade_id": trade_id,
-            "status": "OPEN",
-            "opened_at": utc_now(),
-            "closed_at": "",
-            "window_start": str(btc["window_start"]),
-            "window_end": str(btc["window_end"]),
-            "side": side,
-            "btc_open": f"{btc_open:.8f}",
-            "btc_entry": f"{btc_current:.8f}",
-            "btc_close": "",
-            "btc_move_pct": "",
-            "market_price": f"{market_price:.8f}",
-            "contracts": f"{contracts:.8f}",
-            "position_size": f"{position_size:.8f}",
-            "probability": f"{result.probability:.8f}",
-            "edge": f"{result.edge:.8f}",
-            "kelly_fraction": f"{result.kelly_fraction:.8f}",
-            "pnl": "",
-            "bankroll_after": "",
-            "reason": result.reason,
-        }
+    print(
+        f"BTC Open:       ${btc_open:,.2f}"
     )
 
-    print(f"Saved to {TRADES_FILE}")
+    print(
+        f"BTC Current:    ${btc_current:,.2f}"
+    )
+
+    print(
+        f"Market Price:   ${market_price:.4f}"
+    )
+
+    print(
+        f"Probability:    "
+        f"{float(result.probability) * 100:.2f}%"
+    )
+
+    print(
+        f"Edge:           "
+        f"{float(result.edge) * 100:.2f}%"
+    )
+
+    print(
+        f"Kelly:          "
+        f"{float(result.kelly_fraction) * 100:.2f}%"
+    )
+
+    print(
+        f"Position Size:  ${position_size:.2f}"
+    )
+
+    print(
+        f"Contracts:      {contracts:.4f}"
+    )
+
+    print(
+        f"Bankroll:       ${bankroll:.2f}"
+    )
+
     print()
+    print("STATUS: OPEN")
+    print("PAPER ONLY - NO REAL ORDER")
+    print("=" * 70)
+    print()
+
+    return bankroll
 
 
 # ============================================================
 # MAIN
 # ============================================================
 
-def main() -> None:
+def main():
+
+    print()
+    print("=" * 70)
+    print("POLYMARKET BTC 5-MIN PAPER TRADER")
+    print("=" * 70)
+
+    print()
+    print("PAPER ONLY")
+    print("NO API KEYS")
+    print("NO WALLET")
+    print("NO PRIVATE KEYS")
+    print("NO REAL ORDERS")
+    print("NO REAL MONEY")
+    print()
+
+    # --------------------------------------------------------
+    # Load bankroll
+    # --------------------------------------------------------
 
     bankroll = load_bankroll()
 
-    print(f"Current PAPER BANKROLL: ${bankroll:.2f}")
-    print()
+    print(
+        f"Current PAPER BANKROLL: "
+        f"${bankroll:.2f}"
+    )
 
     # --------------------------------------------------------
-    # BTC DATA
+    # Import market data modules
     # --------------------------------------------------------
 
-    print("Loading BTC market data...")
+    try:
 
-    btc = get_btc_market_data()
+        from market_data import get_btc_market_data
+        from polymarket_data import get_market_data
 
-    print(f"BTC Open:        ${float(btc['btc_open']):,.2f}")
-    print(f"BTC Current:     ${float(btc['btc_current']):,.2f}")
-    print(f"BTC Movement:    {float(btc['movement_percent']):+.4f}%")
-    print(f"Seconds Left:    {btc['seconds_remaining']}")
-    print(f"Source:          {btc['source']}")
-    print(f"Window Start:    {btc['window_start']}")
-    print(f"Window End:      {btc['window_end']}")
-    print()
+    except Exception as e:
 
-    if btc["source"] != EXPECTED_BTC_SOURCE:
-        raise RuntimeError(
-            f"Unexpected BTC data source: {btc['source']}"
+        print(
+            f"ERROR: Could not import market modules: {e}"
         )
 
+        return
+
     # --------------------------------------------------------
-    # CHECK OPEN TRADE
+    # Load BTC data
+    # --------------------------------------------------------
+
+    print()
+    print("Loading BTC market data...")
+
+    try:
+
+        btc_data = get_btc_market_data()
+
+    except Exception as e:
+
+        print(
+            f"ERROR: BTC market data failed: {e}"
+        )
+
+        return
+
+    print(
+        f"BTC Open:        "
+        f"${btc_data['btc_open']:,.2f}"
+    )
+
+    print(
+        f"BTC Current:     "
+        f"${btc_data['btc_current']:,.2f}"
+    )
+
+    print(
+        f"BTC Movement:    "
+        f"{btc_data['movement_percent']:+.4f}%"
+    )
+
+    print(
+        f"Seconds Left:    "
+        f"{btc_data['seconds_remaining']}"
+    )
+
+    print(
+        f"Source:          "
+        f"{btc_data['source']}"
+    )
+
+    print(
+        f"Window Start:    "
+        f"{btc_data['window_start']}"
+    )
+
+    print(
+        f"Window End:      "
+        f"{btc_data['window_end']}"
+    )
+
+    # --------------------------------------------------------
+    # Safety check data source
+    # --------------------------------------------------------
+
+    if btc_data["source"] != EXPECTED_BTC_SOURCE:
+
+        print()
+        print(
+            "ERROR: Unexpected BTC data source."
+        )
+
+        print(
+            f"Expected: {EXPECTED_BTC_SOURCE}"
+        )
+
+        print(
+            f"Actual:   {btc_data['source']}"
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # Load Polymarket data
+    # --------------------------------------------------------
+
+    print()
+    print("Loading Polymarket market data...")
+
+    try:
+
+        market_data = get_market_data()
+
+    except Exception as e:
+
+        print(
+            f"ERROR: Polymarket market data failed: {e}"
+        )
+
+        return
+
+    print(
+        f"Question:        "
+        f"{market_data['question']}"
+    )
+
+    print(
+        f"Market:          "
+        f"{market_data['market_slug']}"
+    )
+
+    print(
+        f"Seconds Left:    "
+        f"{market_data['seconds_remaining']}"
+    )
+
+    # --------------------------------------------------------
+    # Prices
+    # --------------------------------------------------------
+
+    outcome_prices = market_data.get(
+        "outcome_prices",
+        {},
+    )
+
+    up_price = outcome_prices.get(
+        "UP"
+    )
+
+    down_price = outcome_prices.get(
+        "DOWN"
+    )
+
+    if up_price is None or down_price is None:
+
+        print(
+            "ERROR: UP/DOWN prices unavailable."
+        )
+
+        return
+
+    up_price = float(up_price)
+    down_price = float(down_price)
+
+    print(
+        f"UP Price:        {up_price:.3f}"
+    )
+
+    print(
+        f"DOWN Price:      {down_price:.3f}"
+    )
+
+    # --------------------------------------------------------
+    # Resolve an existing trade FIRST
     # --------------------------------------------------------
 
     open_trade = load_open_trade()
 
     if open_trade is not None:
-        print("OPEN PAPER TRADE FOUND")
-        print(f"Trade ID: {open_trade['trade_id']}")
-        print(f"Side:     {open_trade['side']}")
+
+        print()
+        print(
+            "OPEN PAPER TRADE DETECTED"
+        )
+
+        print(
+            f"Trade ID: {open_trade['trade_id']}"
+        )
+
+        print(
+            f"Side:     {open_trade['side']}"
+        )
+
         print(
             f"Window:   {open_trade['window_start']}"
         )
-        print()
 
         bankroll = resolve_open_trade(
             open_trade,
-            btc,
+            btc_data,
             bankroll,
         )
 
-        # After resolving, continue evaluating the current
-        # market. This allows a new trade in the new window.
-        open_trade = load_open_trade()
-
     # --------------------------------------------------------
-    # POLYMARKET DATA
+    # IMPORTANT:
+    #
+    # Check again after resolving.
+    #
+    # There must NEVER be more than one OPEN trade.
     # --------------------------------------------------------
 
-    print("Loading Polymarket market data...")
-
-    poly = get_polymarket_market_data()
-
-    print(f"Question:        {poly['question']}")
-    print(f"Market:          {poly['market_slug']}")
-    print(f"Seconds Left:    {poly['seconds_remaining']}")
-    print(
-        f"UP Price:        {poly['outcome_prices'].get('UP')}"
-    )
-    print(
-        f"DOWN Price:      {poly['outcome_prices'].get('DOWN')}"
-    )
-    print()
-
-    # --------------------------------------------------------
-    # ONE POSITION PROTECTION
-    # --------------------------------------------------------
+    open_trade = load_open_trade()
 
     if open_trade is not None:
-        print("OPEN POSITION STILL EXISTS.")
-        print("No second paper trade allowed.")
+
         print()
-        print("=" * 70)
-        print("RUN COMPLETE")
-        print("=" * 70)
+        print(
+            "OPEN TRADE STILL ACTIVE"
+        )
+
+        print(
+            f"Trade ID: {open_trade['trade_id']}"
+        )
+
+        print(
+            "No new trade will be opened."
+        )
+
+        print()
+        print(
+            "=" * 70
+        )
+
+        print(
+            "RUN COMPLETE"
+        )
+
+        print(
+            "=" * 70
+        )
+
+        print(
+            "PAPER ONLY - NO REAL TRADING"
+        )
+
         return
 
     # --------------------------------------------------------
-    # DETERMINE SIDE
+    # Determine direction
     # --------------------------------------------------------
 
-    movement_pct = float(btc["movement_percent"])
-
-    if movement_pct > 0:
-        side = "UP"
-    else:
-        side = "DOWN"
-
-    market_price = poly["outcome_prices"].get(side)
-
-    if market_price is None:
-        print(f"No {side} market price available.")
-        return
-
-    market_price = float(market_price)
-
-    # Use the stricter remaining time.
-    seconds_remaining = min(
-        int(btc["seconds_remaining"]),
-        int(poly["seconds_remaining"]),
+    btc_movement = float(
+        btc_data["movement_percent"]
     )
 
-    print("STRATEGY INPUT")
-    print(f"Direction:       {side}")
-    print(f"Market Price:    ${market_price:.4f}")
-    print(f"Seconds Left:    {seconds_remaining}")
-    print(f"Bankroll:        ${bankroll:.2f}")
+    direction = (
+        "UP"
+        if btc_movement > 0
+        else "DOWN"
+    )
+
+    market_price = (
+        up_price
+        if direction == "UP"
+        else down_price
+    )
+
     print()
+    print("=" * 70)
+    print("STRATEGY INPUT")
+    print("=" * 70)
+
+    print(
+        f"Direction:       {direction}"
+    )
+
+    print(
+        f"Market Price:    ${market_price:.4f}"
+    )
+
+    print(
+        f"Seconds Left:    "
+        f"{btc_data['seconds_remaining']}"
+    )
+
+    print(
+        f"Bankroll:        ${bankroll:.2f}"
+    )
 
     # --------------------------------------------------------
-    # STRATEGY
+    # Evaluate strategy
     # --------------------------------------------------------
 
     result = evaluate(
-        btc_open=float(btc["btc_open"]),
-        btc_current=float(btc["btc_current"]),
+        btc_open=btc_data["btc_open"],
+        btc_current=btc_data["btc_current"],
         market_price=market_price,
-        seconds_remaining=seconds_remaining,
+        seconds_remaining=btc_data["seconds_remaining"],
         bankroll=bankroll,
     )
 
     # --------------------------------------------------------
-    # RESULT
+    # Strategy result
     # --------------------------------------------------------
 
+    print()
     print("=" * 70)
     print("STRATEGY RESULT")
     print("=" * 70)
 
-    print(f"Signal:          {result.signal}")
-    print(f"Side:            {result.side}")
-    print(f"Probability:     {result.probability:.2%}")
-    print(f"Market Price:    ${result.market_price:.4f}")
-    print(f"Edge:            {result.edge:.2%}")
-    print(f"Kelly:           {result.kelly_fraction:.2%}")
-    print(f"Position Size:   ${result.position_size:.2f}")
-    print(f"Reason:          {result.reason}")
-    print()
+    print(
+        f"Signal:          {result.signal}"
+    )
 
-    # --------------------------------------------------------
-    # OPEN TRADE IF VALID
-    # --------------------------------------------------------
+    print(
+        f"Side:            {result.side}"
+    )
 
-    if result.signal == "YES":
+    print(
+        f"Probability:     "
+        f"{float(result.probability) * 100:.2f}%"
+    )
+
+    print(
+        f"Market Price:    "
+        f"${float(result.market_price):.4f}"
+    )
+
+    print(
+        f"Edge:            "
+        f"{float(result.edge) * 100:.2f}%"
+    )
+
+    print(
+        f"Kelly:           "
+        f"{float(result.kelly_fraction) * 100:.2f}%"
+    )
+
+    print(
+        f"Position Size:   "
+        f"${float(result.position_size):.2f}"
+    )
+
+    print(
+        f"Reason:          {result.reason}"
+    )
+
+    print("=" * 70)
+
+    # ========================================================
+    # CRITICAL TRADE DECISION
+    # ========================================================
+
+    if result.signal is True:
+
+        print()
+        print(
+            "VALID SIGNAL DETECTED"
+        )
+
+        print(
+            "Opening PAPER trade..."
+        )
+
+        # ----------------------------------------------------
+        # THIS IS THE IMPORTANT FIX
+        #
+        # A valid signal directly calls open_paper_trade().
+        # ----------------------------------------------------
 
         open_paper_trade(
-            btc=btc,
-            poly=poly,
             result=result,
+            btc_data=btc_data,
+            market_data=market_data,
             bankroll=bankroll,
         )
 
     else:
 
-        print("NO PAPER TRADE")
-        print(f"Reason: {result.reason}")
         print()
+        print(
+            "NO PAPER TRADE"
+        )
 
+        print(
+            f"Reason: {result.reason}"
+        )
+
+    # --------------------------------------------------------
+    # Final
+    # --------------------------------------------------------
+
+    print()
     print("=" * 70)
     print("RUN COMPLETE")
     print("=" * 70)
-    print()
-    print("PAPER ONLY - NO REAL TRADING")
+
+    print(
+        "PAPER ONLY - NO REAL TRADING"
+    )
+
     print()
 
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
     main()
