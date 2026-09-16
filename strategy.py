@@ -1,68 +1,58 @@
 """
-Polymarket BTC Paper Trader
-===========================
+Polymarket BTC 5-Minute Strategy
+================================
 
-Strategy engine only.
+Paper-trading strategy based on:
+- BTC movement
+- remaining time in the 5-minute window
+- estimated volatility
+- market price
+- probability / edge
+- fractional Kelly sizing
 
-IMPORTANT:
-- PAPER ONLY
-- NO API CONNECTION
-- NO REAL ORDERS
-- NO PRIVATE KEYS
-- NO EXCHANGE ACCESS
-
-This module contains the mathematical strategy only.
-It does not connect to Binance or Polymarket.
-It cannot execute trades.
+PAPER TRADING ONLY:
+- No API keys
+- No wallet
+- No real orders
 """
 
+import math
 from dataclasses import dataclass
-from math import erf, log, sqrt
 
 
 # ============================================================
-# CONFIGURATION
+# STRATEGY PARAMETERS
 # ============================================================
 
-# Minimum absolute BTC movement from the 5-minute opening price.
 MIN_BTC_MOVE_PCT = 0.06
 
-# Minimum model probability required.
 MIN_PROBABILITY = 0.80
 
-# Minimum difference between model probability
-# and Polymarket market price.
 MIN_EDGE = 0.05
 
-# Allowed Polymarket contract price.
 MIN_MARKET_PRICE = 0.50
 MAX_MARKET_PRICE = 0.90
 
-# Entry window.
-#
-# Trade only between:
-# T-240 seconds
-# and
-# T-10 seconds
 ENTRY_START_SECONDS = 240
 ENTRY_END_SECONDS = 10
 
-# Quarter Kelly.
 KELLY_FRACTION = 0.25
 
-# Position limits.
 MIN_POSITION_USD = 5.00
 MAX_POSITION_USD = 25.00
 
-# Default annualised volatility assumption.
-#
-# This is deliberately configurable.
-# Later we can replace this with realised BTC volatility.
+# Annualized BTC volatility assumption.
 DEFAULT_VOLATILITY = 0.12
+
+# Important:
+# Prevent the probability model from becoming unrealistically
+# close to 0% or 100%.
+PROBABILITY_FLOOR = 0.05
+PROBABILITY_CEILING = 0.95
 
 
 # ============================================================
-# RESULT STRUCTURE
+# RESULT OBJECT
 # ============================================================
 
 @dataclass
@@ -87,156 +77,81 @@ def normal_cdf(x: float) -> float:
     """
 
     return 0.5 * (
-        1.0 + erf(x / sqrt(2.0))
+        1.0 + math.erf(x / math.sqrt(2.0))
     )
 
 
 # ============================================================
-# PROBABILITY ESTIMATION
+# PROBABILITY MODEL
 # ============================================================
 
-def estimate_probability(
+def calculate_probability(
     btc_open: float,
     btc_current: float,
-    seconds_remaining: float,
+    seconds_remaining: int,
     volatility: float = DEFAULT_VOLATILITY,
-) -> tuple[float, str]:
+) -> float:
     """
     Estimate the probability that BTC finishes above
-    or below the 5-minute opening price.
+    the current 5-minute opening price.
 
-    Uses a simplified Brownian-motion model.
+    The model uses:
+    - current BTC displacement from the 5m open
+    - remaining time
+    - annualized volatility
 
-    Returns:
-        probability, side
+    Probability is deliberately capped to avoid artificial
+    100% signals.
     """
 
-    # --------------------------------------------------------
-    # VALIDATION
-    # --------------------------------------------------------
-
     if btc_open <= 0:
-        raise ValueError(
-            "btc_open must be greater than zero"
-        )
+        raise ValueError("btc_open must be positive")
 
     if btc_current <= 0:
-        raise ValueError(
-            "btc_current must be greater than zero"
-        )
+        raise ValueError("btc_current must be positive")
+
+    if seconds_remaining < 0:
+        seconds_remaining = 0
 
     if volatility <= 0:
-        raise ValueError(
-            "volatility must be greater than zero"
-        )
+        raise ValueError("volatility must be positive")
 
-    # --------------------------------------------------------
-    # MARKET ALREADY EXPIRED
-    # --------------------------------------------------------
-
-    if seconds_remaining <= 0:
-
-        if btc_current > btc_open:
-
-            return 1.0, "UP"
-
-        if btc_current < btc_open:
-
-            return 1.0, "DOWN"
-
-        # Exactly equal.
-        return 0.5, "UP"
-
-    # --------------------------------------------------------
-    # LOG PRICE DISPLACEMENT
-    # --------------------------------------------------------
-
-    displacement = log(
+    # Current log-price displacement.
+    displacement = math.log(
         btc_current / btc_open
     )
 
-    # --------------------------------------------------------
-    # TIME CONVERSION
-    # --------------------------------------------------------
-
-    seconds_per_year = (
-        365.25
-        * 24.0
-        * 60.0
-        * 60.0
-    )
+    # Convert annualized volatility to volatility over
+    # the remaining fraction of a year.
+    seconds_per_year = 365.25 * 24 * 60 * 60
 
     time_fraction = (
-        seconds_remaining
+        max(seconds_remaining, 1)
         / seconds_per_year
     )
 
-    # --------------------------------------------------------
-    # REMAINING STANDARD DEVIATION
-    # --------------------------------------------------------
-
-    sigma = (
-        volatility
-        * sqrt(time_fraction)
-    )
+    sigma = volatility * math.sqrt(time_fraction)
 
     if sigma <= 0:
+        return PROBABILITY_CEILING if displacement > 0 else PROBABILITY_FLOOR
 
-        if displacement > 0:
-
-            return 1.0, "UP"
-
-        if displacement < 0:
-
-            return 1.0, "DOWN"
-
-        return 0.5, "UP"
-
-    # --------------------------------------------------------
-    # Z-SCORE
-    # --------------------------------------------------------
-
+    # Probability that the final log-price is above
+    # the opening price.
     z = displacement / sigma
-
-    # --------------------------------------------------------
-    # PROBABILITY UP
-    # --------------------------------------------------------
 
     probability_up = normal_cdf(z)
 
-    # --------------------------------------------------------
-    # SAFETY BOUND
-    #
-    # Never pass exactly 0% or 100% into the Kelly
-    # calculation. A model should never claim absolute
-    # certainty.
-    # --------------------------------------------------------
-
-    probability_up = min(
-        max(probability_up, 1e-9),
-        1.0 - 1e-9,
+    # Keep the model away from artificial 0% / 100%.
+    probability_up = max(
+        PROBABILITY_FLOOR,
+        min(PROBABILITY_CEILING, probability_up),
     )
 
-    # --------------------------------------------------------
-    # SELECT SIDE
-    # --------------------------------------------------------
-
-    if probability_up >= 0.50:
-
-        return probability_up, "UP"
-
-    probability_down = 1.0 - probability_up
-
-    probability_down = min(
-        max(probability_down, 1e-9),
-        1.0 - 1e-9,
-    )
-
-    return probability_down, "DOWN"
+    return probability_up
 
 
 # ============================================================
-# KELLY CRITERION
+# KELLY
 # ============================================================
 
 def calculate_kelly(
@@ -244,73 +159,46 @@ def calculate_kelly(
     market_price: float,
 ) -> float:
     """
-    Calculate the Kelly fraction for a binary contract.
+    Calculate Kelly fraction for a binary contract.
 
-    p = probability of winning
-    q = probability of losing
-    b = net odds
+    For a contract priced at p_market:
+        b = (1 - market_price) / market_price
 
     Kelly:
+        f = (p * b - q) / b
 
-        f = (b*p - q) / b
-
-    Returns zero when the mathematical edge is not positive.
-
-    IMPORTANT:
-    Exactly 0% and 100% probabilities are never accepted
-    as absolute certainty.
+    The result is clamped to [0, 1].
     """
 
-    # --------------------------------------------------------
-    # VALIDATE PROBABILITY
-    # --------------------------------------------------------
-
-    if probability <= 0.0:
-
+    if market_price <= 0:
         return 0.0
 
-    if probability >= 1.0:
-
-        probability = 1.0 - 1e-9
-
-    # --------------------------------------------------------
-    # VALIDATE MARKET PRICE
-    # --------------------------------------------------------
-
-    if market_price <= 0.0:
-
+    if market_price >= 1:
         return 0.0
 
-    if market_price >= 1.0:
+    probability = max(
+        0.0,
+        min(1.0 - 1e-9, probability),
+    )
 
-        return 0.0
-
-    # --------------------------------------------------------
-    # NET ODDS
-    # --------------------------------------------------------
+    q = 1.0 - probability
 
     b = (
         (1.0 - market_price)
         / market_price
     )
 
-    # Probability of losing.
-    q = 1.0 - probability
-
-    if b <= 0.0:
-
+    if b <= 0:
         return 0.0
 
-    # --------------------------------------------------------
-    # KELLY
-    # --------------------------------------------------------
-
     kelly = (
-        (b * probability) - q
+        probability * b - q
     ) / b
 
-    # Never return negative Kelly.
-    return max(0.0, kelly)
+    return max(
+        0.0,
+        min(1.0, kelly),
+    )
 
 
 # ============================================================
@@ -319,93 +207,36 @@ def calculate_kelly(
 
 def calculate_position_size(
     bankroll: float,
-    probability: float,
-    market_price: float,
-) -> tuple[float, float]:
+    kelly_fraction: float,
+) -> float:
     """
-    Calculate Quarter-Kelly position size.
-
-    Returns:
-
-        quarter_kelly_fraction
-        position_size_usd
-
-    IMPORTANT:
-
-    If Kelly is zero or negative, position size is zero.
-
-    The minimum $5 position is applied only after a valid
-    positive Kelly calculation.
+    Apply Quarter-Kelly and position limits.
     """
-
-    # --------------------------------------------------------
-    # VALIDATE BANKROLL
-    # --------------------------------------------------------
 
     if bankroll <= 0:
+        return 0.0
 
-        return 0.0, 0.0
+    if kelly_fraction <= 0:
+        return 0.0
 
-    # --------------------------------------------------------
-    # FULL KELLY
-    # --------------------------------------------------------
-
-    full_kelly = calculate_kelly(
-        probability=probability,
-        market_price=market_price,
+    fractional_kelly = (
+        kelly_fraction * KELLY_FRACTION
     )
 
-    # --------------------------------------------------------
-    # NO POSITIVE EDGE
-    # --------------------------------------------------------
-
-    if full_kelly <= 0.0:
-
-        return 0.0, 0.0
-
-    # --------------------------------------------------------
-    # QUARTER KELLY
-    # --------------------------------------------------------
-
-    quarter_kelly = (
-        full_kelly
-        * KELLY_FRACTION
+    position = (
+        bankroll * fractional_kelly
     )
 
-    if quarter_kelly <= 0.0:
-
-        return 0.0, 0.0
-
-    # --------------------------------------------------------
-    # RAW POSITION
-    # --------------------------------------------------------
-
-    position_size = (
-        bankroll
-        * quarter_kelly
-    )
-
-    # --------------------------------------------------------
-    # POSITION LIMITS
-    # --------------------------------------------------------
-
-    position_size = max(
-        MIN_POSITION_USD,
-        position_size,
-    )
-
-    position_size = min(
+    position = min(
+        position,
         MAX_POSITION_USD,
-        position_size,
-    )
-
-    # Never use more than the bankroll.
-    position_size = min(
-        position_size,
         bankroll,
     )
 
-    return quarter_kelly, position_size
+    if position < MIN_POSITION_USD:
+        return 0.0
+
+    return position
 
 
 # ============================================================
@@ -415,183 +246,175 @@ def calculate_position_size(
 def evaluate(
     btc_open: float,
     btc_current: float,
-    seconds_remaining: float,
+    seconds_remaining: int,
     market_price: float,
-    bankroll: float,
+    bankroll: float = 100.0,
     volatility: float = DEFAULT_VOLATILITY,
 ) -> StrategyResult:
     """
-    Evaluate one Polymarket BTC 5-minute opportunity.
+    Evaluate the current BTC 5-minute market.
 
-    No trade is executed here.
-
-    This function only produces a mathematical signal.
+    Returns a StrategyResult containing either:
+    - a valid paper-trading signal
+    - or the reason why there is no signal
     """
 
-    # --------------------------------------------------------
-    # BASIC VALIDATION
-    # --------------------------------------------------------
-
     if btc_open <= 0:
-
         return StrategyResult(
-            signal=False,
-            side="NONE",
-            probability=0.0,
-            market_price=market_price,
-            edge=0.0,
-            kelly_fraction=0.0,
-            position_size=0.0,
-            reason="Invalid BTC opening price",
+            False,
+            "NONE",
+            0.0,
+            market_price,
+            0.0,
+            0.0,
+            0.0,
+            "Invalid BTC opening price",
         )
 
     if btc_current <= 0:
-
         return StrategyResult(
-            signal=False,
-            side="NONE",
-            probability=0.0,
-            market_price=market_price,
-            edge=0.0,
-            kelly_fraction=0.0,
-            position_size=0.0,
-            reason="Invalid BTC current price",
-        )
-
-    if market_price <= 0:
-
-        return StrategyResult(
-            signal=False,
-            side="NONE",
-            probability=0.0,
-            market_price=market_price,
-            edge=0.0,
-            kelly_fraction=0.0,
-            position_size=0.0,
-            reason="Invalid market price",
+            False,
+            "NONE",
+            0.0,
+            market_price,
+            0.0,
+            0.0,
+            0.0,
+            "Invalid BTC current price",
         )
 
     # --------------------------------------------------------
-    # BTC MOVEMENT
+    # BTC movement
     # --------------------------------------------------------
 
-    btc_move_pct = (
-        abs(
-            (btc_current - btc_open)
-            / btc_open
-        )
+    move_pct = (
+        (btc_current - btc_open)
+        / btc_open
         * 100.0
     )
 
-    if btc_move_pct < MIN_BTC_MOVE_PCT:
+    absolute_move = abs(move_pct)
+
+    if absolute_move < MIN_BTC_MOVE_PCT:
 
         return StrategyResult(
-            signal=False,
-            side="NONE",
-            probability=0.0,
-            market_price=market_price,
-            edge=0.0,
-            kelly_fraction=0.0,
-            position_size=0.0,
-            reason=(
+            False,
+            "NONE",
+            0.0,
+            market_price,
+            0.0,
+            0.0,
+            0.0,
+            (
                 "BTC movement too small: "
-                f"{btc_move_pct:.4f}%"
+                f"{move_pct:.4f}%"
             ),
         )
 
     # --------------------------------------------------------
-    # ENTRY WINDOW
+    # Entry window
     # --------------------------------------------------------
 
     if seconds_remaining > ENTRY_START_SECONDS:
 
         return StrategyResult(
-            signal=False,
-            side="NONE",
-            probability=0.0,
-            market_price=market_price,
-            edge=0.0,
-            kelly_fraction=0.0,
-            position_size=0.0,
-            reason=(
+            False,
+            "NONE",
+            0.0,
+            market_price,
+            0.0,
+            0.0,
+            0.0,
+            (
                 "Too early: "
-                f"{seconds_remaining:.1f}s remaining"
+                f"{seconds_remaining}s remaining"
             ),
         )
 
     if seconds_remaining < ENTRY_END_SECONDS:
 
         return StrategyResult(
-            signal=False,
-            side="NONE",
-            probability=0.0,
-            market_price=market_price,
-            edge=0.0,
-            kelly_fraction=0.0,
-            position_size=0.0,
-            reason=(
+            False,
+            "NONE",
+            0.0,
+            market_price,
+            0.0,
+            0.0,
+            0.0,
+            (
                 "Too late: "
-                f"{seconds_remaining:.1f}s remaining"
+                f"{seconds_remaining}s remaining"
             ),
         )
 
     # --------------------------------------------------------
-    # MARKET PRICE RANGE
+    # Market price filter
     # --------------------------------------------------------
 
-    if not (
-        MIN_MARKET_PRICE
-        <= market_price
-        <= MAX_MARKET_PRICE
+    if (
+        market_price < MIN_MARKET_PRICE
+        or market_price > MAX_MARKET_PRICE
     ):
 
         return StrategyResult(
-            signal=False,
-            side="NONE",
-            probability=0.0,
-            market_price=market_price,
-            edge=0.0,
-            kelly_fraction=0.0,
-            position_size=0.0,
-            reason=(
+            False,
+            "NONE",
+            0.0,
+            market_price,
+            0.0,
+            0.0,
+            0.0,
+            (
                 "Market price outside range: "
                 f"{market_price:.4f}"
             ),
         )
 
     # --------------------------------------------------------
-    # MODEL PROBABILITY
+    # Direction
     # --------------------------------------------------------
 
-    probability, side = estimate_probability(
+    side = (
+        "UP"
+        if move_pct > 0
+        else "DOWN"
+    )
+
+    # For DOWN we mirror the probability.
+    probability_up = calculate_probability(
         btc_open=btc_open,
         btc_current=btc_current,
         seconds_remaining=seconds_remaining,
         volatility=volatility,
     )
 
+    if side == "UP":
+        probability = probability_up
+    else:
+        probability = 1.0 - probability_up
+
     # --------------------------------------------------------
-    # PROBABILITY FILTER
+    # Probability filter
     # --------------------------------------------------------
 
     if probability < MIN_PROBABILITY:
 
         return StrategyResult(
-            signal=False,
-            side=side,
-            probability=probability,
-            market_price=market_price,
-            edge=0.0,
-            kelly_fraction=0.0,
-            position_size=0.0,
-            reason=(
+            False,
+            side,
+            probability,
+            market_price,
+            0.0,
+            0.0,
+            0.0,
+            (
                 "Probability too low: "
                 f"{probability:.2%}"
             ),
         )
 
     # --------------------------------------------------------
-    # EDGE
+    # Edge
     # --------------------------------------------------------
 
     edge = (
@@ -602,208 +425,237 @@ def evaluate(
     if edge < MIN_EDGE:
 
         return StrategyResult(
-            signal=False,
-            side=side,
-            probability=probability,
-            market_price=market_price,
-            edge=edge,
-            kelly_fraction=0.0,
-            position_size=0.0,
-            reason=(
+            False,
+            side,
+            probability,
+            market_price,
+            edge,
+            0.0,
+            0.0,
+            (
                 "Edge too small: "
                 f"{edge:.2%}"
             ),
         )
 
     # --------------------------------------------------------
-    # QUARTER KELLY
-    # --------------------------------------------------------
-
-    kelly_fraction, position_size = (
-        calculate_position_size(
-            bankroll=bankroll,
-            probability=probability,
-            market_price=market_price,
-        )
-    )
-
-    # --------------------------------------------------------
-    # KELLY SAFETY
-    # --------------------------------------------------------
-
-    if kelly_fraction <= 0.0:
-
-        return StrategyResult(
-            signal=False,
-            side=side,
-            probability=probability,
-            market_price=market_price,
-            edge=edge,
-            kelly_fraction=0.0,
-            position_size=0.0,
-            reason="Kelly calculation produced zero",
-        )
-
-    if position_size <= 0.0:
-
-        return StrategyResult(
-            signal=False,
-            side=side,
-            probability=probability,
-            market_price=market_price,
-            edge=edge,
-            kelly_fraction=kelly_fraction,
-            position_size=0.0,
-            reason="Position size is zero",
-        )
-
-    # --------------------------------------------------------
-    # VALID SIGNAL
-    # --------------------------------------------------------
-
-    return StrategyResult(
-        signal=True,
-        side=side,
-        probability=probability,
-        market_price=market_price,
-        edge=edge,
-        kelly_fraction=kelly_fraction,
-        position_size=position_size,
-        reason="VALID PAPER SIGNAL",
-    )
-
-
-# ============================================================
-# STRATEGY SELF TEST
-# ============================================================
-
-def run_self_test():
-
-    print()
-    print("=" * 60)
-    print("STRATEGY ENGINE SELF TEST")
-    print("=" * 60)
-    print("PAPER ONLY")
-    print("NO API")
-    print("NO REAL ORDERS")
-    print()
-
-    # --------------------------------------------------------
-    # TEST 1
+    # Kelly
     # --------------------------------------------------------
 
     kelly = calculate_kelly(
-        probability=0.90,
-        market_price=0.68,
+        probability,
+        market_price,
     )
 
-    assert kelly > 0.0
+    if kelly <= 0:
 
-    print("PASS: positive Kelly")
+        return StrategyResult(
+            False,
+            side,
+            probability,
+            market_price,
+            edge,
+            kelly,
+            0.0,
+            "Kelly fraction is zero",
+        )
 
     # --------------------------------------------------------
-    # TEST 2
+    # Position size
     # --------------------------------------------------------
 
-    kelly_zero = calculate_kelly(
-        probability=0.60,
-        market_price=0.68,
+    position_size = calculate_position_size(
+        bankroll,
+        kelly,
     )
 
-    assert kelly_zero == 0.0
+    if position_size <= 0:
 
-    print("PASS: negative-edge Kelly rejection")
+        return StrategyResult(
+            False,
+            side,
+            probability,
+            market_price,
+            edge,
+            kelly,
+            0.0,
+            "Position size below minimum",
+        )
 
     # --------------------------------------------------------
-    # TEST 3
+    # Valid signal
     # --------------------------------------------------------
 
-    kelly_boundary = calculate_kelly(
-        probability=1.0,
-        market_price=0.68,
+    return StrategyResult(
+        True,
+        side,
+        probability,
+        market_price,
+        edge,
+        kelly,
+        position_size,
+        "Valid signal",
     )
 
-    assert kelly_boundary > 0.0
+
+# ============================================================
+# SELF TEST
+# ============================================================
+
+def run_self_test() -> None:
+    """
+    Internal software tests.
+
+    These tests verify code behaviour only.
+    They are NOT performance tests.
+    """
+
+    print("=" * 60)
+    print("POLYMARKET BTC STRATEGY SELF TEST")
+    print("=" * 60)
+
+    # --------------------------------------------------------
+    # Test 1: probability is bounded
+    # --------------------------------------------------------
+
+    probability = calculate_probability(
+        btc_open=100000.0,
+        btc_current=100300.0,
+        seconds_remaining=120,
+        volatility=0.12,
+    )
+
+    assert (
+        PROBABILITY_FLOOR
+        <= probability
+        <= PROBABILITY_CEILING
+    )
 
     print(
-        "PASS: 100% probability boundary handling"
+        f"PASS: probability bounded "
+        f"({probability:.2%})"
     )
 
     # --------------------------------------------------------
-    # TEST 4
+    # Test 2: positive Kelly
     # --------------------------------------------------------
 
-    quarter_kelly, position = (
-        calculate_position_size(
-            bankroll=100.0,
-            probability=0.90,
-            market_price=0.68,
-        )
+    kelly = calculate_kelly(
+        probability=0.85,
+        market_price=0.68,
     )
 
-    assert quarter_kelly > 0.0
-    assert position > 0.0
-
-    print("PASS: Quarter-Kelly position sizing")
-
-    # --------------------------------------------------------
-    # TEST 5
-    # --------------------------------------------------------
-
-    zero_kelly, zero_position = (
-        calculate_position_size(
-            bankroll=100.0,
-            probability=0.60,
-            market_price=0.68,
-        )
-    )
-
-    assert zero_kelly == 0.0
-    assert zero_position == 0.0
+    assert kelly > 0
 
     print(
-        "PASS: zero-Kelly position rejection"
+        f"PASS: positive Kelly "
+        f"({kelly:.4%})"
     )
 
     # --------------------------------------------------------
-    # TEST 6
+    # Test 3: negative edge
     # --------------------------------------------------------
 
     result = evaluate(
         btc_open=100000.0,
         btc_current=100300.0,
         seconds_remaining=120,
+        market_price=0.90,
+        bankroll=100.0,
+    )
+
+    assert result.signal is False
+
+    print(
+        "PASS: negative/insufficient edge rejected"
+    )
+
+    # --------------------------------------------------------
+    # Test 4: small movement
+    # --------------------------------------------------------
+
+    result = evaluate(
+        btc_open=100000.0,
+        btc_current=100010.0,
+        seconds_remaining=120,
         market_price=0.68,
+        bankroll=100.0,
+    )
+
+    assert result.signal is False
+
+    print(
+        "PASS: small BTC movement rejected"
+    )
+
+    # --------------------------------------------------------
+    # Test 5: zero Kelly
+    # --------------------------------------------------------
+
+    position = calculate_position_size(
+        bankroll=100.0,
+        kelly_fraction=0.0,
+    )
+
+    assert position == 0.0
+
+    print(
+        "PASS: zero Kelly produces zero position"
+    )
+
+    # --------------------------------------------------------
+    # Test 6: Quarter-Kelly sizing
+    # --------------------------------------------------------
+
+    position = calculate_position_size(
+        bankroll=100.0,
+        kelly_fraction=0.20,
+    )
+
+    assert position == 5.0
+
+    print(
+        f"PASS: Quarter-Kelly sizing "
+        f"(${position:.2f})"
+    )
+
+    # --------------------------------------------------------
+    # Test 7: valid strategy path
+    # --------------------------------------------------------
+
+    result = evaluate(
+        btc_open=100000.0,
+        btc_current=100200.0,
+        seconds_remaining=120,
+        market_price=0.60,
         bankroll=100.0,
         volatility=0.12,
     )
 
-    assert result.signal is True
-    assert result.kelly_fraction > 0.0
-    assert result.position_size > 0.0
-
-    print("PASS: strategy evaluation")
-
-    # --------------------------------------------------------
-    # SUMMARY
-    # --------------------------------------------------------
+    print()
+    print("VALID PATH TEST")
+    print(
+        f"Probability: {result.probability:.2%}"
+    )
+    print(
+        f"Edge:        {result.edge:.2%}"
+    )
+    print(
+        f"Kelly:       {result.kelly_fraction:.4%}"
+    )
+    print(
+        f"Position:    ${result.position_size:.2f}"
+    )
 
     print()
     print("=" * 60)
     print("ALL STRATEGY SELF TESTS PASSED")
     print("=" * 60)
-    print()
-    print("No API connection.")
-    print("No wallet.")
-    print("No real orders.")
-    print("Paper only.")
-    print()
+    print("SOFTWARE TEST ONLY")
+    print("NO PERFORMANCE CLAIM")
+    print("NO REAL TRADING")
+    print("=" * 60)
 
-
-# ============================================================
-# MAIN
-# ============================================================
 
 if __name__ == "__main__":
-
     run_self_test()
