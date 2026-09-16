@@ -2,18 +2,16 @@
 Polymarket BTC 5-Minute Strategy
 ================================
 
-Paper-trading strategy based on:
-- BTC movement
-- remaining time in the 5-minute window
-- estimated volatility
-- market price
-- probability / edge
-- fractional Kelly sizing
+Paper-trading strategy for BTC 5-minute Up/Down markets.
 
-PAPER TRADING ONLY:
-- No API keys
-- No wallet
-- No real orders
+IMPORTANT:
+This module contains NO exchange connection, NO wallet and
+NO real trading functionality.
+
+The probability model is deliberately conservative.
+It uses a short-time BTC volatility estimate instead of
+an annualized volatility assumption that can become too
+aggressive on a 5-minute horizon.
 """
 
 import math
@@ -41,12 +39,15 @@ KELLY_FRACTION = 0.25
 MIN_POSITION_USD = 5.00
 MAX_POSITION_USD = 25.00
 
-# Annualized BTC volatility assumption.
-DEFAULT_VOLATILITY = 0.12
+# Approximate BTC volatility expressed as a DAILY
+# standard deviation.
+#
+# This is intentionally conservative for the paper model.
+DEFAULT_DAILY_VOLATILITY = 0.04
 
-# Important:
-# Prevent the probability model from becoming unrealistically
-# close to 0% or 100%.
+SECONDS_PER_DAY = 24 * 60 * 60
+
+# Never allow the model to claim certainty.
 PROBABILITY_FLOOR = 0.05
 PROBABILITY_CEILING = 0.95
 
@@ -89,19 +90,21 @@ def calculate_probability(
     btc_open: float,
     btc_current: float,
     seconds_remaining: int,
-    volatility: float = DEFAULT_VOLATILITY,
+    daily_volatility: float = DEFAULT_DAILY_VOLATILITY,
 ) -> float:
     """
-    Estimate the probability that BTC finishes above
-    the current 5-minute opening price.
+    Estimate probability that BTC finishes above the
+    5-minute opening price.
 
     The model uses:
-    - current BTC displacement from the 5m open
-    - remaining time
-    - annualized volatility
+        current displacement
+        remaining time
+        daily BTC volatility
 
-    Probability is deliberately capped to avoid artificial
-    100% signals.
+    The daily volatility is converted to the remaining
+    time interval.
+
+    This is a model estimate, NOT a guarantee.
     """
 
     if btc_open <= 0:
@@ -110,41 +113,59 @@ def calculate_probability(
     if btc_current <= 0:
         raise ValueError("btc_current must be positive")
 
-    if seconds_remaining < 0:
-        seconds_remaining = 0
+    if daily_volatility <= 0:
+        raise ValueError(
+            "daily_volatility must be positive"
+        )
 
-    if volatility <= 0:
-        raise ValueError("volatility must be positive")
+    seconds_remaining = max(
+        1,
+        seconds_remaining,
+    )
 
-    # Current log-price displacement.
+    # --------------------------------------------------------
+    # Log price displacement
+    # --------------------------------------------------------
+
     displacement = math.log(
         btc_current / btc_open
     )
 
-    # Convert annualized volatility to volatility over
-    # the remaining fraction of a year.
-    seconds_per_year = 365.25 * 24 * 60 * 60
+    # --------------------------------------------------------
+    # Convert daily volatility to remaining-time volatility
+    # --------------------------------------------------------
 
-    time_fraction = (
-        max(seconds_remaining, 1)
-        / seconds_per_year
+    time_fraction_of_day = (
+        seconds_remaining
+        / SECONDS_PER_DAY
     )
 
-    sigma = volatility * math.sqrt(time_fraction)
+    sigma = (
+        daily_volatility
+        * math.sqrt(time_fraction_of_day)
+    )
 
     if sigma <= 0:
-        return PROBABILITY_CEILING if displacement > 0 else PROBABILITY_FLOOR
+        return 0.50
 
-    # Probability that the final log-price is above
-    # the opening price.
+    # --------------------------------------------------------
+    # Standardized displacement
+    # --------------------------------------------------------
+
     z = displacement / sigma
 
     probability_up = normal_cdf(z)
 
-    # Keep the model away from artificial 0% / 100%.
+    # --------------------------------------------------------
+    # Safety bounds
+    # --------------------------------------------------------
+
     probability_up = max(
         PROBABILITY_FLOOR,
-        min(PROBABILITY_CEILING, probability_up),
+        min(
+            PROBABILITY_CEILING,
+            probability_up,
+        ),
     )
 
     return probability_up
@@ -159,15 +180,7 @@ def calculate_kelly(
     market_price: float,
 ) -> float:
     """
-    Calculate Kelly fraction for a binary contract.
-
-    For a contract priced at p_market:
-        b = (1 - market_price) / market_price
-
-    Kelly:
-        f = (p * b - q) / b
-
-    The result is clamped to [0, 1].
+    Calculate the Kelly fraction for a binary contract.
     """
 
     if market_price <= 0:
@@ -178,7 +191,10 @@ def calculate_kelly(
 
     probability = max(
         0.0,
-        min(1.0 - 1e-9, probability),
+        min(
+            1.0 - 1e-9,
+            probability,
+        ),
     )
 
     q = 1.0 - probability
@@ -197,7 +213,10 @@ def calculate_kelly(
 
     return max(
         0.0,
-        min(1.0, kelly),
+        min(
+            1.0,
+            kelly,
+        ),
     )
 
 
@@ -220,11 +239,13 @@ def calculate_position_size(
         return 0.0
 
     fractional_kelly = (
-        kelly_fraction * KELLY_FRACTION
+        kelly_fraction
+        * KELLY_FRACTION
     )
 
     position = (
-        bankroll * fractional_kelly
+        bankroll
+        * fractional_kelly
     )
 
     position = min(
@@ -249,15 +270,15 @@ def evaluate(
     seconds_remaining: int,
     market_price: float,
     bankroll: float = 100.0,
-    volatility: float = DEFAULT_VOLATILITY,
+    daily_volatility: float = DEFAULT_DAILY_VOLATILITY,
 ) -> StrategyResult:
     """
-    Evaluate the current BTC 5-minute market.
-
-    Returns a StrategyResult containing either:
-    - a valid paper-trading signal
-    - or the reason why there is no signal
+    Evaluate a BTC 5-minute Up/Down market.
     """
+
+    # --------------------------------------------------------
+    # Validate prices
+    # --------------------------------------------------------
 
     if btc_open <= 0:
         return StrategyResult(
@@ -293,10 +314,7 @@ def evaluate(
         * 100.0
     )
 
-    absolute_move = abs(move_pct)
-
-    if absolute_move < MIN_BTC_MOVE_PCT:
-
+    if abs(move_pct) < MIN_BTC_MOVE_PCT:
         return StrategyResult(
             False,
             "NONE",
@@ -316,7 +334,6 @@ def evaluate(
     # --------------------------------------------------------
 
     if seconds_remaining > ENTRY_START_SECONDS:
-
         return StrategyResult(
             False,
             "NONE",
@@ -332,7 +349,6 @@ def evaluate(
         )
 
     if seconds_remaining < ENTRY_END_SECONDS:
-
         return StrategyResult(
             False,
             "NONE",
@@ -348,14 +364,13 @@ def evaluate(
         )
 
     # --------------------------------------------------------
-    # Market price filter
+    # Market price
     # --------------------------------------------------------
 
     if (
         market_price < MIN_MARKET_PRICE
         or market_price > MAX_MARKET_PRICE
     ):
-
         return StrategyResult(
             False,
             "NONE",
@@ -380,12 +395,15 @@ def evaluate(
         else "DOWN"
     )
 
-    # For DOWN we mirror the probability.
+    # --------------------------------------------------------
+    # Probability
+    # --------------------------------------------------------
+
     probability_up = calculate_probability(
         btc_open=btc_open,
         btc_current=btc_current,
         seconds_remaining=seconds_remaining,
-        volatility=volatility,
+        daily_volatility=daily_volatility,
     )
 
     if side == "UP":
@@ -398,7 +416,6 @@ def evaluate(
     # --------------------------------------------------------
 
     if probability < MIN_PROBABILITY:
-
         return StrategyResult(
             False,
             side,
@@ -423,7 +440,6 @@ def evaluate(
     )
 
     if edge < MIN_EDGE:
-
         return StrategyResult(
             False,
             side,
@@ -448,7 +464,6 @@ def evaluate(
     )
 
     if kelly <= 0:
-
         return StrategyResult(
             False,
             side,
@@ -470,7 +485,6 @@ def evaluate(
     )
 
     if position_size <= 0:
-
         return StrategyResult(
             False,
             side,
@@ -504,10 +518,9 @@ def evaluate(
 
 def run_self_test() -> None:
     """
-    Internal software tests.
+    Software tests only.
 
-    These tests verify code behaviour only.
-    They are NOT performance tests.
+    These tests do NOT demonstrate trading performance.
     """
 
     print("=" * 60)
@@ -515,14 +528,14 @@ def run_self_test() -> None:
     print("=" * 60)
 
     # --------------------------------------------------------
-    # Test 1: probability is bounded
+    # Test 1: moderate probability
     # --------------------------------------------------------
 
     probability = calculate_probability(
         btc_open=100000.0,
         btc_current=100300.0,
         seconds_remaining=120,
-        volatility=0.12,
+        daily_volatility=0.04,
     )
 
     assert (
@@ -553,7 +566,7 @@ def run_self_test() -> None:
     )
 
     # --------------------------------------------------------
-    # Test 3: negative edge
+    # Test 3: insufficient edge
     # --------------------------------------------------------
 
     result = evaluate(
@@ -567,7 +580,7 @@ def run_self_test() -> None:
     assert result.signal is False
 
     print(
-        "PASS: negative/insufficient edge rejected"
+        "PASS: insufficient edge rejected"
     )
 
     # --------------------------------------------------------
@@ -620,31 +633,33 @@ def run_self_test() -> None:
     )
 
     # --------------------------------------------------------
-    # Test 7: valid strategy path
+    # Test 7: real-world-style small movement
     # --------------------------------------------------------
 
-    result = evaluate(
-        btc_open=100000.0,
-        btc_current=100200.0,
-        seconds_remaining=120,
-        market_price=0.60,
-        bankroll=100.0,
-        volatility=0.12,
+    probability = calculate_probability(
+        btc_open=75739.08,
+        btc_current=75766.20,
+        seconds_remaining=204,
+        daily_volatility=0.04,
     )
 
     print()
-    print("VALID PATH TEST")
+    print("REALISTIC MARKET EXAMPLE")
     print(
-        f"Probability: {result.probability:.2%}"
+        "BTC movement: +0.0358%"
     )
     print(
-        f"Edge:        {result.edge:.2%}"
+        f"Estimated UP probability: "
+        f"{probability:.2%}"
     )
+
+    # A small move should NOT automatically produce
+    # an extreme probability.
+    assert probability < 0.80
+
     print(
-        f"Kelly:       {result.kelly_fraction:.4%}"
-    )
-    print(
-        f"Position:    ${result.position_size:.2f}"
+        "PASS: small real-world-style move "
+        "does not create an automatic signal"
     )
 
     print()
