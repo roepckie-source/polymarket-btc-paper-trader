@@ -32,12 +32,15 @@ STARTING_BANKROLL = 100.00
 
 RESULTS_FILE = "paper_trades.csv"
 
-# Safety limits
+# Maximum amount of bankroll that may be exposed
+# in one paper position.
 MAX_TOTAL_EXPOSURE_PCT = 0.25
 
-# We do not allow more than one simulated position
-# at the same time.
+# Safety: only one position at a time.
 ONE_POSITION_AT_A_TIME = True
+
+# Minimum Kelly fraction required before a trade can open.
+MIN_KELLY_FRACTION = 0.0001
 
 
 # ============================================================
@@ -96,6 +99,7 @@ class PaperTrader:
     # --------------------------------------------------------
 
     def _create_results_file(self):
+
         if os.path.exists(self.results_file):
             return
 
@@ -128,6 +132,7 @@ class PaperTrader:
             ])
 
     def _write_result(self, row):
+
         with open(
             self.results_file,
             "a",
@@ -180,12 +185,21 @@ class PaperTrader:
     ):
 
         # ----------------------------------------------------
-        # Safety
+        # SAFETY: ONLY ONE POSITION
         # ----------------------------------------------------
 
         if ONE_POSITION_AT_A_TIME and self.position is not None:
 
+            print(
+                "PAPER: trade rejected - "
+                "position already open"
+            )
+
             return False
+
+        # ----------------------------------------------------
+        # SAFETY: BANKROLL
+        # ----------------------------------------------------
 
         if self.bankroll <= 0:
 
@@ -194,7 +208,7 @@ class PaperTrader:
             return False
 
         # ----------------------------------------------------
-        # Strategy evaluation
+        # STRATEGY EVALUATION
         # ----------------------------------------------------
 
         result = evaluate(
@@ -209,7 +223,7 @@ class PaperTrader:
         timestamp = datetime.now(UTC).isoformat()
 
         # ----------------------------------------------------
-        # No signal
+        # NO SIGNAL
         # ----------------------------------------------------
 
         if not result.signal:
@@ -222,30 +236,83 @@ class PaperTrader:
             return False
 
         # ----------------------------------------------------
-        # Exposure protection
+        # CRITICAL KELLY SAFETY
+        #
+        # Never force a minimum position if Kelly says
+        # that the mathematically appropriate position is zero.
+        # ----------------------------------------------------
+
+        if result.kelly_fraction <= MIN_KELLY_FRACTION:
+
+            print(
+                "PAPER: NO TRADE | "
+                f"Kelly too small: "
+                f"{result.kelly_fraction:.6%}"
+            )
+
+            self._write_result([
+                timestamp,
+                "REJECT",
+                result.side,
+                btc_open,
+                btc_current,
+                seconds_remaining,
+                market_price,
+                result.probability,
+                result.edge,
+                result.kelly_fraction,
+                0.0,
+                0.0,
+                "",
+                "",
+                self.bankroll,
+                "Kelly too small",
+            ])
+
+            return False
+
+        # ----------------------------------------------------
+        # KELLY POSITION
+        # ----------------------------------------------------
+
+        position_size = result.position_size
+
+        # ----------------------------------------------------
+        # EXPOSURE PROTECTION
         # ----------------------------------------------------
 
         maximum_allowed = self._maximum_position_allowed()
 
         position_size = min(
-            result.position_size,
+            position_size,
             maximum_allowed,
         )
 
+        # ----------------------------------------------------
+        # FINAL SAFETY
+        # ----------------------------------------------------
+
         if position_size <= 0:
 
-            print("PAPER: position size rejected")
+            print(
+                "PAPER: NO TRADE | "
+                "position size <= 0"
+            )
 
             return False
 
+        if position_size > self.bankroll:
+
+            position_size = self.bankroll
+
         # ----------------------------------------------------
-        # Contract calculation
+        # CONTRACT CALCULATION
         # ----------------------------------------------------
 
         contracts = position_size / market_price
 
         # ----------------------------------------------------
-        # Open position
+        # OPEN POSITION
         # ----------------------------------------------------
 
         self.position = PaperPosition(
@@ -260,6 +327,10 @@ class PaperTrader:
             kelly_fraction=result.kelly_fraction,
             entry_time=timestamp,
         )
+
+        # ----------------------------------------------------
+        # LOG
+        # ----------------------------------------------------
 
         self._write_result([
             timestamp,
@@ -280,19 +351,25 @@ class PaperTrader:
             result.reason,
         ])
 
+        # ----------------------------------------------------
+        # CONSOLE
+        # ----------------------------------------------------
+
         print()
         print("=" * 60)
         print("PAPER TRADE OPENED")
         print("=" * 60)
+
         print(f"Side:          {result.side}")
         print(f"BTC Open:      ${btc_open:,.2f}")
         print(f"BTC Current:   ${btc_current:,.2f}")
         print(f"Market Price:  ${market_price:.4f}")
         print(f"Probability:   {result.probability:.2%}")
         print(f"Edge:          {result.edge:.2%}")
-        print(f"Kelly:         {result.kelly_fraction:.2%}")
+        print(f"Kelly:         {result.kelly_fraction:.4%}")
         print(f"Position:      ${position_size:.2f}")
         print(f"Contracts:     {contracts:.4f}")
+
         print("=" * 60)
         print()
 
@@ -307,9 +384,15 @@ class PaperTrader:
         winning_side: str,
     ):
 
+        # ----------------------------------------------------
+        # SAFETY
+        # ----------------------------------------------------
+
         if self.position is None:
 
-            print("PAPER: no open position")
+            print(
+                "PAPER: no open position"
+            )
 
             return False
 
@@ -317,7 +400,9 @@ class PaperTrader:
 
         if winning_side not in ("UP", "DOWN"):
 
-            print("PAPER: invalid winning side")
+            print(
+                "PAPER: invalid winning side"
+            )
 
             return False
 
@@ -356,7 +441,7 @@ class PaperTrader:
             self.total_loss += abs(pnl)
 
         # ----------------------------------------------------
-        # Update bankroll
+        # UPDATE BANKROLL
         # ----------------------------------------------------
 
         self.bankroll += pnl
@@ -366,7 +451,7 @@ class PaperTrader:
         self._update_drawdown()
 
         # ----------------------------------------------------
-        # Save result
+        # SAVE RESULT
         # ----------------------------------------------------
 
         self._write_result([
@@ -388,16 +473,26 @@ class PaperTrader:
             "MARKET RESOLVED",
         ])
 
+        # ----------------------------------------------------
+        # CONSOLE
+        # ----------------------------------------------------
+
         print()
         print("=" * 60)
         print("PAPER TRADE RESOLVED")
         print("=" * 60)
+
         print(f"Side:          {position.side}")
         print(f"Result:        {result_text}")
         print(f"P&L:           ${pnl:+.2f}")
         print(f"Bankroll:      ${self.bankroll:.2f}")
+
         print("=" * 60)
         print()
+
+        # ----------------------------------------------------
+        # CLEAR POSITION
+        # ----------------------------------------------------
 
         self.position = None
 
@@ -419,16 +514,36 @@ class PaperTrader:
             )
 
         return {
-            "starting_bankroll": self.starting_bankroll,
-            "current_bankroll": self.bankroll,
-            "total_pnl": self.bankroll - self.starting_bankroll,
-            "total_trades": self.total_trades,
-            "wins": self.winning_trades,
-            "losses": self.losing_trades,
-            "winrate": winrate,
-            "gross_profit": self.total_profit,
-            "gross_loss": self.total_loss,
-            "max_drawdown": self.max_drawdown,
+            "starting_bankroll":
+                self.starting_bankroll,
+
+            "current_bankroll":
+                self.bankroll,
+
+            "total_pnl":
+                self.bankroll
+                - self.starting_bankroll,
+
+            "total_trades":
+                self.total_trades,
+
+            "wins":
+                self.winning_trades,
+
+            "losses":
+                self.losing_trades,
+
+            "winrate":
+                winrate,
+
+            "gross_profit":
+                self.total_profit,
+
+            "gross_loss":
+                self.total_loss,
+
+            "max_drawdown":
+                self.max_drawdown,
         }
 
     # --------------------------------------------------------
@@ -516,14 +631,14 @@ def demo():
     print()
 
     trader = PaperTrader(
-        starting_bankroll=100.00
+        starting_bankroll=100.00,
+        results_file="paper_demo.csv",
     )
 
     # --------------------------------------------------------
-    # Example observation
+    # SOFTWARE TEST DATA ONLY
     #
     # This is NOT real market data.
-    # It is only a software test.
     # --------------------------------------------------------
 
     trader.open_trade(
@@ -535,9 +650,9 @@ def demo():
     )
 
     # --------------------------------------------------------
-    # Simulate market resolution.
+    # Simulate resolution.
     #
-    # Change to DOWN to test a losing trade.
+    # This is ONLY a software test.
     # --------------------------------------------------------
 
     if trader.position is not None:
@@ -545,7 +660,7 @@ def demo():
         trader.resolve_trade("UP")
 
     # --------------------------------------------------------
-    # Summary
+    # SUMMARY
     # --------------------------------------------------------
 
     trader.print_summary()
