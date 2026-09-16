@@ -1,215 +1,304 @@
 """
-Market Data Module
-==================
+Coinbase BTC 5-Minute Market Data
 
-Reads public BTC market data from Coinbase.
+PAPER / READ-ONLY ONLY
 
-PAPER TRADING ONLY:
+- Public Coinbase API
 - No API keys
-- No private keys
 - No wallet
-- No real orders
+- No private keys
+- No orders
+- No trading
 """
 
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import requests
 
 
-COINBASE_TICKER_URL = (
-    "https://api.exchange.coinbase.com/products/BTC-USD/ticker"
+TICKER_URL = (
+    "https://api.exchange.coinbase.com/"
+    "products/BTC-USD/ticker"
 )
 
-COINBASE_CANDLES_URL = (
-    "https://api.exchange.coinbase.com/products/BTC-USD/candles"
+CANDLES_URL = (
+    "https://api.exchange.coinbase.com/"
+    "products/BTC-USD/candles"
 )
 
-FIVE_MINUTES = 5 * 60
+TIMEOUT = 10
+FIVE_MINUTES = 300
 
 
-@dataclass
-class MarketData:
-    btc_open: float
-    btc_current: float
-    window_start: int
-    window_end: int
-    seconds_remaining: int
+def utc_now():
+    return datetime.now(timezone.utc)
 
 
-def get_btc_current_price() -> float:
+def current_window():
     """
-    Get current BTC/USD price from Coinbase.
+    Return current 5-minute UTC window.
+    """
+
+    now = int(time.time())
+
+    start = now - (now % FIVE_MINUTES)
+    end = start + FIVE_MINUTES
+
+    return start, end
+
+
+def get_current_price():
+    """
+    Get current BTC/USD price from Coinbase ticker.
     """
 
     response = requests.get(
-        COINBASE_TICKER_URL,
-        timeout=10,
-        headers={
-            "User-Agent": "polymarket-btc-paper-trader/1.0"
-        },
+        TICKER_URL,
+        timeout=TIMEOUT,
     )
 
     response.raise_for_status()
 
     data = response.json()
 
-    return float(data["price"])
+    price = data.get("price")
+
+    if price is None:
+        raise RuntimeError(
+            "Coinbase ticker returned no price."
+        )
+
+    return float(price)
 
 
-def get_current_5m_window() -> tuple[int, int, int]:
+def get_5m_open(start_timestamp):
     """
-    Calculate the current 5-minute UTC window.
+    Get the opening price of the current
+    5-minute Coinbase candle.
+
+    Coinbase candle format:
+
+    [
+        timestamp,
+        low,
+        high,
+        open,
+        close,
+        volume
+    ]
     """
 
-    now = int(time.time())
+    end_timestamp = start_timestamp + FIVE_MINUTES
 
-    window_start = (now // FIVE_MINUTES) * FIVE_MINUTES
-    window_end = window_start + FIVE_MINUTES
-
-    seconds_remaining = max(0, window_end - now)
-
-    return window_start, window_end, seconds_remaining
-
-
-def get_btc_5m_open(window_start: int) -> float:
-    """
-    Get the opening BTC price of the current 5-minute candle.
-    """
-
-    window_end = window_start + FIVE_MINUTES
+    params = {
+        "granularity": FIVE_MINUTES,
+        "start": datetime.fromtimestamp(
+            start_timestamp,
+            timezone.utc,
+        ).isoformat(),
+        "end": datetime.fromtimestamp(
+            end_timestamp,
+            timezone.utc,
+        ).isoformat(),
+    }
 
     response = requests.get(
-        COINBASE_CANDLES_URL,
-        params={
-            "granularity": FIVE_MINUTES,
-            "start": datetime.fromtimestamp(
-                window_start,
-                tz=timezone.utc,
-            ).isoformat(),
-            "end": datetime.fromtimestamp(
-                window_end,
-                tz=timezone.utc,
-            ).isoformat(),
-        },
-        timeout=10,
-        headers={
-            "User-Agent": "polymarket-btc-paper-trader/1.0"
-        },
+        CANDLES_URL,
+        params=params,
+        timeout=TIMEOUT,
     )
 
     response.raise_for_status()
 
-    candles = response.json()
+    data = response.json()
 
-    if not candles:
-        raise ValueError("No 5-minute candle data returned.")
-
-    # Coinbase candle format:
-    # [timestamp, low, high, open, close, volume]
-
-    current_candle = None
-
-    for candle in candles:
-        candle_timestamp = int(candle[0])
-
-        if candle_timestamp == window_start:
-            current_candle = candle
-            break
-
-    if current_candle is None:
-        raise ValueError(
-            "Current 5-minute candle was not found."
+    if not isinstance(data, list):
+        raise RuntimeError(
+            "Unexpected market data response."
         )
 
-    return float(current_candle[3])
+    if len(data) == 0:
+        raise RuntimeError(
+            "No 5-minute candle data returned."
+        )
 
+    # Find the candle belonging to the
+    # current 5-minute window.
+    for candle in data:
 
-def get_market_data() -> MarketData:
-    """
-    Get current BTC price and current 5-minute opening price.
-    """
+        if not isinstance(candle, list):
+            continue
 
-    window_start, window_end, seconds_remaining = (
-        get_current_5m_window()
+        if len(candle) < 6:
+            continue
+
+        candle_timestamp = int(candle[0])
+
+        if candle_timestamp == start_timestamp:
+
+            return float(candle[3])
+
+    # Coinbase can occasionally return the candle
+    # with a slightly different timestamp.
+    # In that case use the candle with the closest
+    # timestamp to the current window.
+    valid = []
+
+    for candle in data:
+
+        if not isinstance(candle, list):
+            continue
+
+        if len(candle) < 6:
+            continue
+
+        try:
+            candle_timestamp = int(candle[0])
+            candle_open = float(candle[3])
+
+            distance = abs(
+                candle_timestamp - start_timestamp
+            )
+
+            valid.append(
+                (
+                    distance,
+                    candle_timestamp,
+                    candle_open,
+                )
+            )
+
+        except (TypeError, ValueError):
+            continue
+
+    if valid:
+
+        valid.sort(
+            key=lambda item: item[0]
+        )
+
+        distance, timestamp, opening = valid[0]
+
+        # Only accept a nearby candle.
+        if distance <= FIVE_MINUTES:
+
+            return opening
+
+    raise RuntimeError(
+        "No suitable 5-minute candle found."
     )
 
-    btc_open = get_btc_5m_open(window_start)
 
-    btc_current = get_btc_current_price()
+def get_market_data():
 
-    return MarketData(
-        btc_open=btc_open,
-        btc_current=btc_current,
-        window_start=window_start,
-        window_end=window_end,
-        seconds_remaining=seconds_remaining,
+    start_timestamp, end_timestamp = (
+        current_window()
     )
 
+    current_price = get_current_price()
 
-def format_timestamp(timestamp: int) -> str:
-    """
-    Convert Unix timestamp to readable UTC time.
-    """
+    try:
 
-    return datetime.fromtimestamp(
-        timestamp,
-        tz=timezone.utc,
-    ).strftime("%Y-%m-%d %H:%M:%S UTC")
+        btc_open = get_5m_open(
+            start_timestamp
+        )
 
+        source = "Coinbase 5m candle"
 
-def calculate_btc_move_pct(
-    btc_open: float,
-    btc_current: float,
-) -> float:
-    """
-    Calculate BTC percentage movement from candle open.
-    """
+    except Exception as candle_error:
 
-    if btc_open <= 0:
-        raise ValueError("BTC opening price must be positive.")
+        print()
+        print(
+            "WARNING: Coinbase 5m candle unavailable."
+        )
 
-    return (
-        (btc_current - btc_open)
+        print(
+            f"Reason: {candle_error}"
+        )
+
+        print(
+            "Using current BTC price as temporary "
+            "open fallback."
+        )
+
+        print()
+
+        btc_open = current_price
+
+        source = "Coinbase ticker fallback"
+
+    movement = (
+        (current_price - btc_open)
         / btc_open
         * 100
     )
 
+    seconds_remaining = max(
+        0,
+        end_timestamp - int(time.time()),
+    )
 
-def print_market_data(data: MarketData) -> None:
-    """
-    Print live BTC market data.
-    """
+    return {
+        "btc_open": btc_open,
+        "btc_current": current_price,
+        "movement_percent": movement,
+        "window_start": start_timestamp,
+        "window_end": end_timestamp,
+        "seconds_remaining": seconds_remaining,
+        "source": source,
+    }
 
-    move_pct = calculate_btc_move_pct(
-        data.btc_open,
-        data.btc_current,
+
+def print_market_data(data):
+
+    start_dt = datetime.fromtimestamp(
+        data["window_start"],
+        timezone.utc,
+    )
+
+    end_dt = datetime.fromtimestamp(
+        data["window_end"],
+        timezone.utc,
     )
 
     print("=" * 60)
     print("BTC MARKET DATA")
     print("=" * 60)
 
-    print(f"BTC 5m Open:       ${data.btc_open:,.2f}")
-    print(f"BTC Current:       ${data.btc_current:,.2f}")
+    print(
+        f"BTC 5m Open:       "
+        f"${data['btc_open']:,.2f}"
+    )
 
     print(
-        f"BTC Movement:      {move_pct:+.4f}%"
+        f"BTC Current:       "
+        f"${data['btc_current']:,.2f}"
+    )
+
+    print(
+        f"BTC Movement:      "
+        f"{data['movement_percent']:+.4f}%"
     )
 
     print(
         f"5m window start:   "
-        f"{format_timestamp(data.window_start)}"
+        f"{start_dt}"
     )
 
     print(
         f"5m window end:     "
-        f"{format_timestamp(data.window_end)}"
+        f"{end_dt}"
     )
 
     print(
-        f"Seconds remaining: {data.seconds_remaining}"
+        f"Seconds remaining: "
+        f"{data['seconds_remaining']}"
+    )
+
+    print(
+        f"Data source:       "
+        f"{data['source']}"
     )
 
     print("=" * 60)
@@ -220,39 +309,46 @@ def print_market_data(data: MarketData) -> None:
     print("=" * 60)
 
 
-def run_test() -> None:
-    """
-    Test live public BTC market data.
-    """
+def run_test():
 
     print(
-        "Connecting to Coinbase public BTC market data..."
+        "Connecting to Coinbase public BTC "
+        "market data..."
     )
 
-    try:
-        data = get_market_data()
+    data = get_market_data()
 
-        print_market_data(data)
+    print_market_data(data)
 
-    except requests.RequestException as error:
-        print()
-        print(
-            "ERROR: Could not retrieve Coinbase market data."
-        )
-        print(error)
-
-    except (
-        KeyError,
-        ValueError,
-        TypeError,
-        IndexError,
-    ) as error:
-        print()
-        print(
-            "ERROR: Unexpected market data response."
-        )
-        print(error)
+    return 0
 
 
 if __name__ == "__main__":
-    run_test()
+
+    try:
+
+        raise SystemExit(
+            run_test()
+        )
+
+    except requests.RequestException as exc:
+
+        print()
+        print(
+            "COINBASE REQUEST ERROR"
+        )
+
+        print(exc)
+
+        raise SystemExit(1)
+
+    except Exception as exc:
+
+        print()
+        print(
+            "ERROR:"
+        )
+
+        print(exc)
+
+        raise SystemExit(1)
