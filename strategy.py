@@ -5,13 +5,17 @@ Polymarket BTC 5-Minute Strategy
 Paper-trading strategy for BTC 5-minute Up/Down markets.
 
 IMPORTANT:
-This module contains NO exchange connection, NO wallet and
-NO real trading functionality.
+- No API keys
+- No wallet
+- No real orders
+- Software / paper trading only
 
-The probability model is deliberately conservative.
-It uses a short-time BTC volatility estimate instead of
-an annualized volatility assumption that can become too
-aggressive on a 5-minute horizon.
+The probability model uses:
+- BTC displacement from the 5-minute opening price
+- remaining time
+- daily BTC volatility converted to the remaining time
+
+The model deliberately avoids artificial 0% / 100% certainty.
 """
 
 import math
@@ -39,15 +43,16 @@ KELLY_FRACTION = 0.25
 MIN_POSITION_USD = 5.00
 MAX_POSITION_USD = 25.00
 
-# Approximate BTC volatility expressed as a DAILY
-# standard deviation.
+
+# Conservative daily BTC volatility assumption.
 #
-# This is intentionally conservative for the paper model.
+# This is NOT a measured live volatility value yet.
+# It is only used for the current paper-model test.
 DEFAULT_DAILY_VOLATILITY = 0.04
 
 SECONDS_PER_DAY = 24 * 60 * 60
 
-# Never allow the model to claim certainty.
+# Technical safety boundaries.
 PROBABILITY_FLOOR = 0.05
 PROBABILITY_CEILING = 0.95
 
@@ -96,15 +101,12 @@ def calculate_probability(
     Estimate probability that BTC finishes above the
     5-minute opening price.
 
-    The model uses:
-        current displacement
+    Uses:
+        log-price displacement
         remaining time
-        daily BTC volatility
+        daily volatility
 
-    The daily volatility is converted to the remaining
-    time interval.
-
-    This is a model estimate, NOT a guarantee.
+    Returns a probability between 5% and 95%.
     """
 
     if btc_open <= 0:
@@ -124,7 +126,7 @@ def calculate_probability(
     )
 
     # --------------------------------------------------------
-    # Log price displacement
+    # Current BTC displacement
     # --------------------------------------------------------
 
     displacement = math.log(
@@ -157,7 +159,7 @@ def calculate_probability(
     probability_up = normal_cdf(z)
 
     # --------------------------------------------------------
-    # Safety bounds
+    # Safety boundaries
     # --------------------------------------------------------
 
     probability_up = max(
@@ -180,7 +182,7 @@ def calculate_kelly(
     market_price: float,
 ) -> float:
     """
-    Calculate the Kelly fraction for a binary contract.
+    Calculate Kelly fraction for a binary contract.
     """
 
     if market_price <= 0:
@@ -270,14 +272,17 @@ def evaluate(
     seconds_remaining: int,
     market_price: float,
     bankroll: float = 100.0,
-    daily_volatility: float = DEFAULT_DAILY_VOLATILITY,
+    volatility: float = DEFAULT_DAILY_VOLATILITY,
 ) -> StrategyResult:
     """
     Evaluate a BTC 5-minute Up/Down market.
+
+    The parameter name 'volatility' is intentionally kept
+    compatible with paper_trader.py.
     """
 
     # --------------------------------------------------------
-    # Validate prices
+    # Validate BTC prices
     # --------------------------------------------------------
 
     if btc_open <= 0:
@@ -364,7 +369,7 @@ def evaluate(
         )
 
     # --------------------------------------------------------
-    # Market price
+    # Polymarket price range
     # --------------------------------------------------------
 
     if (
@@ -403,7 +408,7 @@ def evaluate(
         btc_open=btc_open,
         btc_current=btc_current,
         seconds_remaining=seconds_remaining,
-        daily_volatility=daily_volatility,
+        daily_volatility=volatility,
     )
 
     if side == "UP":
@@ -520,7 +525,8 @@ def run_self_test() -> None:
     """
     Software tests only.
 
-    These tests do NOT demonstrate trading performance.
+    These tests verify code behaviour.
+    They do NOT demonstrate profitability.
     """
 
     print("=" * 60)
@@ -528,7 +534,8 @@ def run_self_test() -> None:
     print("=" * 60)
 
     # --------------------------------------------------------
-    # Test 1: moderate probability
+    # Test 1
+    # Probability must stay within safety bounds.
     # --------------------------------------------------------
 
     probability = calculate_probability(
@@ -550,7 +557,8 @@ def run_self_test() -> None:
     )
 
     # --------------------------------------------------------
-    # Test 2: positive Kelly
+    # Test 2
+    # Positive Kelly.
     # --------------------------------------------------------
 
     kelly = calculate_kelly(
@@ -566,7 +574,8 @@ def run_self_test() -> None:
     )
 
     # --------------------------------------------------------
-    # Test 3: insufficient edge
+    # Test 3
+    # Insufficient edge.
     # --------------------------------------------------------
 
     result = evaluate(
@@ -575,6 +584,7 @@ def run_self_test() -> None:
         seconds_remaining=120,
         market_price=0.90,
         bankroll=100.0,
+        volatility=0.04,
     )
 
     assert result.signal is False
@@ -584,7 +594,8 @@ def run_self_test() -> None:
     )
 
     # --------------------------------------------------------
-    # Test 4: small movement
+    # Test 4
+    # Small movement.
     # --------------------------------------------------------
 
     result = evaluate(
@@ -593,6 +604,7 @@ def run_self_test() -> None:
         seconds_remaining=120,
         market_price=0.68,
         bankroll=100.0,
+        volatility=0.04,
     )
 
     assert result.signal is False
@@ -602,7 +614,8 @@ def run_self_test() -> None:
     )
 
     # --------------------------------------------------------
-    # Test 5: zero Kelly
+    # Test 5
+    # Zero Kelly.
     # --------------------------------------------------------
 
     position = calculate_position_size(
@@ -617,7 +630,8 @@ def run_self_test() -> None:
     )
 
     # --------------------------------------------------------
-    # Test 6: Quarter-Kelly sizing
+    # Test 6
+    # Quarter-Kelly sizing.
     # --------------------------------------------------------
 
     position = calculate_position_size(
@@ -633,10 +647,11 @@ def run_self_test() -> None:
     )
 
     # --------------------------------------------------------
-    # Test 7: real-world-style small movement
+    # Test 7
+    # Your real-world-style BTC movement.
     # --------------------------------------------------------
 
-    probability = calculate_probability(
+    realistic_probability = calculate_probability(
         btc_open=75739.08,
         btc_current=75766.20,
         seconds_remaining=204,
@@ -645,21 +660,28 @@ def run_self_test() -> None:
 
     print()
     print("REALISTIC MARKET EXAMPLE")
-    print(
-        "BTC movement: +0.0358%"
-    )
+    print("------------------------")
+    print("BTC movement: +0.0358%")
     print(
         f"Estimated UP probability: "
-        f"{probability:.2%}"
+        f"{realistic_probability:.2%}"
     )
 
-    # A small move should NOT automatically produce
-    # an extreme probability.
-    assert probability < 0.80
+    # This movement is below the strategy's
+    # 0.06% minimum movement threshold.
+    result = evaluate(
+        btc_open=75739.08,
+        btc_current=75766.20,
+        seconds_remaining=204,
+        market_price=0.68,
+        bankroll=100.0,
+        volatility=0.04,
+    )
+
+    assert result.signal is False
 
     print(
-        "PASS: small real-world-style move "
-        "does not create an automatic signal"
+        "PASS: +0.0358% movement produces no signal"
     )
 
     print()
@@ -671,6 +693,10 @@ def run_self_test() -> None:
     print("NO REAL TRADING")
     print("=" * 60)
 
+
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
     run_self_test()
