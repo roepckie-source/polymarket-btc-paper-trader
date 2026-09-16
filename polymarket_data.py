@@ -11,118 +11,71 @@ PAPER / READ-ONLY ONLY
 """
 
 import json
-import re
 import time
 from datetime import datetime, timezone
 
 import requests
 
 
-GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
+GAMMA_EVENT_BY_SLUG = (
+    "https://gamma-api.polymarket.com/events/slug/"
+)
 
 TIMEOUT = 10
 
-BTC_5M_PATTERN = re.compile(
-    r"^btc-updown-5m-(\d+)$",
-    re.IGNORECASE,
-)
+FIVE_MINUTES = 300
 
 
 def utc_now():
     return datetime.now(timezone.utc)
 
 
-def get_active_events():
-    params = {
-        "active": "true",
-        "closed": "false",
-        "limit": 100,
-    }
+def current_5m_start_timestamp():
+    """
+    Calculate the Unix timestamp of the current
+    5-minute UTC window.
+    """
+
+    now = int(time.time())
+
+    return now - (now % FIVE_MINUTES)
+
+
+def current_market_slug():
+    start_timestamp = current_5m_start_timestamp()
+
+    return (
+        f"btc-updown-5m-{start_timestamp}"
+    )
+
+
+def get_event_by_slug(slug):
+
+    url = (
+        GAMMA_EVENT_BY_SLUG
+        + slug
+    )
 
     response = requests.get(
-        GAMMA_EVENTS_URL,
-        params=params,
+        url,
         timeout=TIMEOUT,
     )
+
+    if response.status_code == 404:
+        return None
 
     response.raise_for_status()
 
     return response.json()
 
 
-def get_slug_timestamp(slug):
-    """
-    Extract the Unix timestamp from:
-
-    btc-updown-5m-XXXXXXXXXX
-    """
-
-    if not slug:
-        return None
-
-    match = BTC_5M_PATTERN.match(str(slug))
-
-    if not match:
-        return None
-
-    return int(match.group(1))
-
-
-def find_current_btc_market(events):
-    """
-    Find the BTC 5-minute market whose Unix timestamp
-    contains the current UTC time.
-
-    Each market lasts exactly 300 seconds.
-    """
-
-    now_timestamp = int(time.time())
-
-    candidates = []
-
-    for event in events:
-
-        slug = event.get("slug", "")
-
-        start_timestamp = get_slug_timestamp(slug)
-
-        if start_timestamp is None:
-            continue
-
-        end_timestamp = start_timestamp + 300
-
-        # Current time lies inside this 5-minute market
-        if start_timestamp <= now_timestamp < end_timestamp:
-
-            candidates.append(
-                (
-                    start_timestamp,
-                    event,
-                )
-            )
-
-    if not candidates:
-        return None
-
-    # In case there are multiple candidates,
-    # use the newest start timestamp.
-    candidates.sort(
-        key=lambda item: item[0],
-        reverse=True,
-    )
-
-    return candidates[0][1]
-
-
 def parse_array(value):
-    """
-    Polymarket sometimes returns arrays as JSON strings.
-    """
 
     if isinstance(value, str):
 
         try:
             return json.loads(value)
+
         except json.JSONDecodeError:
 
             return []
@@ -132,59 +85,90 @@ def parse_array(value):
 
 def extract_market(event):
 
-    markets = event.get("markets", [])
+    markets = event.get(
+        "markets",
+        [],
+    )
 
     if not markets:
+
         raise RuntimeError(
-            "Event found but contains no market."
+            "Event found but contains no markets."
         )
 
     for market in markets:
 
         outcomes = parse_array(
-            market.get("outcomes", "[]")
+            market.get(
+                "outcomes",
+                "[]",
+            )
         )
 
         prices = parse_array(
-            market.get("outcomePrices", "[]")
+            market.get(
+                "outcomePrices",
+                "[]",
+            )
         )
 
         token_ids = parse_array(
-            market.get("clobTokenIds", "[]")
+            market.get(
+                "clobTokenIds",
+                "[]",
+            )
         )
 
         if len(outcomes) >= 2:
 
             return {
-                "event_title": event.get("title"),
-                "event_slug": event.get("slug"),
-                "question": market.get("question"),
+                "question": market.get(
+                    "question"
+                ),
+
                 "condition_id": market.get(
                     "conditionId"
                 ),
-                "market_slug": market.get("slug"),
+
+                "market_slug": market.get(
+                    "slug"
+                ),
+
                 "outcomes": outcomes,
+
                 "prices": prices,
+
                 "token_ids": token_ids,
             }
 
     raise RuntimeError(
-        "Event found but no binary market found."
+        "No binary BTC market found."
     )
 
 
-def print_market(event, market):
+def run_test():
 
-    slug = event.get("slug", "")
+    print("=" * 60)
+    print(
+        "POLYMARKET BTC 5-MINUTE MARKET DATA"
+    )
+    print("=" * 60)
 
-    start_timestamp = get_slug_timestamp(slug)
+    print()
+    print(
+        "Connecting to Polymarket public market data..."
+    )
+    print()
 
-    if start_timestamp is None:
-        raise RuntimeError(
-            "Could not extract timestamp from slug."
-        )
+    start_timestamp = (
+        current_5m_start_timestamp()
+    )
 
-    end_timestamp = start_timestamp + 300
+    end_timestamp = (
+        start_timestamp + FIVE_MINUTES
+    )
+
+    slug = current_market_slug()
 
     start_dt = datetime.fromtimestamp(
         start_timestamp,
@@ -201,33 +185,16 @@ def print_market(event, market):
         end_timestamp - int(time.time()),
     )
 
-    print()
-    print("=" * 60)
-    print("CURRENT POLYMARKET BTC 5-MINUTE MARKET")
-    print("=" * 60)
-
     print(
-        f"Title:          {event.get('title')}"
+        f"Current UTC:    {utc_now()}"
     )
 
     print(
-        f"Event Slug:     {slug}"
+        f"5m Start UTC:   {start_dt}"
     )
 
     print(
-        f"Market:         {market.get('question')}"
-    )
-
-    print(
-        f"Market Slug:    {market.get('market_slug')}"
-    )
-
-    print(
-        f"Start UTC:      {start_dt}"
-    )
-
-    print(
-        f"End UTC:        {end_dt}"
+        f"5m End UTC:     {end_dt}"
     )
 
     print(
@@ -235,18 +202,111 @@ def print_market(event, market):
     )
 
     print()
-    print("POLYMARKET OUTCOME PRICES")
+
+    print(
+        f"Calculated slug:"
+    )
+
+    print(
+        f"  {slug}"
+    )
+
+    print()
+
+    event = get_event_by_slug(
+        slug
+    )
+
+    if event is None:
+
+        print(
+            "CURRENT MARKET NOT FOUND"
+        )
+
+        print()
+        print(
+            "The calculated market slug does not"
+        )
+
+        print(
+            "exist in Polymarket's public Gamma API."
+        )
+
+        print()
+        print(
+            "PAPER MODE"
+        )
+
+        print(
+            "NO REAL TRADING"
+        )
+
+        print(
+            "NO API KEYS"
+        )
+
+        print(
+            "NO WALLET"
+        )
+
+        return 0
+
+    market = extract_market(
+        event
+    )
+
+    print()
+    print("=" * 60)
+    print(
+        "CURRENT POLYMARKET BTC 5-MINUTE MARKET"
+    )
+    print("=" * 60)
+
+    print(
+        f"Title:          {event.get('title')}"
+    )
+
+    print(
+        f"Event Slug:     {event.get('slug')}"
+    )
+
+    print(
+        f"Question:       {market.get('question')}"
+    )
+
+    print(
+        f"Market Slug:    {market.get('market_slug')}"
+    )
+
+    print(
+        f"Condition ID:   {market.get('condition_id')}"
+    )
+
+    print(
+        f"Seconds left:   {remaining}"
+    )
+
+    print()
+    print(
+        "POLYMARKET OUTCOME PRICES"
+    )
     print("-" * 60)
 
     outcomes = market["outcomes"]
+
     prices = market["prices"]
 
-    for index, outcome in enumerate(outcomes):
+    for index, outcome in enumerate(
+        outcomes
+    ):
 
         if index < len(prices):
 
             try:
-                price = float(prices[index])
+
+                price = float(
+                    prices[index]
+                )
 
                 print(
                     f"{outcome}: "
@@ -254,26 +314,31 @@ def print_market(event, market):
                     f"({price * 100:.2f}%)"
                 )
 
-            except (TypeError, ValueError):
+            except (
+                TypeError,
+                ValueError,
+            ):
 
                 print(
                     f"{outcome}: "
-                    f"price unavailable"
+                    "price unavailable"
                 )
 
         else:
 
             print(
                 f"{outcome}: "
-                f"price unavailable"
+                "price unavailable"
             )
 
     print()
-    print("CLOB TOKEN IDS")
+    print(
+        "CLOB TOKEN IDS"
+    )
     print("-" * 60)
 
     for outcome, token_id in zip(
-        outcomes,
+        market["outcomes"],
         market["token_ids"],
     ):
 
@@ -289,68 +354,6 @@ def print_market(event, market):
     print("NO WALLET")
     print("=" * 60)
 
-
-def run_test():
-
-    print("=" * 60)
-    print("POLYMARKET BTC 5-MINUTE MARKET DATA")
-    print("=" * 60)
-
-    print()
-    print(
-        "Connecting to Polymarket public market data..."
-    )
-    print()
-
-    events = get_active_events()
-
-    print(
-        f"Active events received: {len(events)}"
-    )
-
-    event = find_current_btc_market(events)
-
-    if event is None:
-
-        print()
-        print(
-            "NO CURRENT BTC 5-MINUTE MARKET FOUND"
-        )
-
-        print()
-        print(
-            "BTC 5-minute candidates:"
-        )
-
-        count = 0
-
-        for candidate in events:
-
-            slug = candidate.get(
-                "slug",
-                "",
-            )
-
-            if get_slug_timestamp(slug):
-
-                print(
-                    f"  {slug}"
-                )
-
-                count += 1
-
-                if count >= 10:
-                    break
-
-        return 0
-
-    market = extract_market(event)
-
-    print_market(
-        event,
-        market,
-    )
-
     return 0
 
 
@@ -365,7 +368,10 @@ if __name__ == "__main__":
     except requests.RequestException as exc:
 
         print()
-        print("POLYMARKET REQUEST ERROR")
+        print(
+            "POLYMARKET REQUEST ERROR"
+        )
+
         print(exc)
 
         raise SystemExit(1)
@@ -373,7 +379,10 @@ if __name__ == "__main__":
     except Exception as exc:
 
         print()
-        print("POLYMARKET DATA ERROR")
+        print(
+            "POLYMARKET DATA ERROR"
+        )
+
         print(exc)
 
         raise SystemExit(1)
