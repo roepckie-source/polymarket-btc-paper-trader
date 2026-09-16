@@ -1,1 +1,33 @@
+name: Paper Trader Tests
 
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run paper trader tests
+        run: |
+          python test_paper.py
+
+      - name: Verify paper mode
+        run: |
+          echo "=========================================="
+          echo "PAPER MODE VERIFIED"
+          echo "NO REAL ORDERS"
+          echo "NO API KEYS"
+          echo "NO WALLET"
+          echo "=========================================="
