@@ -18,26 +18,33 @@ from datetime import datetime, timezone
 import requests
 
 
-COINBASE_URL = "https://api.exchange.coinbase.com/products/BTC-USD/ticker"
+COINBASE_TICKER_URL = (
+    "https://api.exchange.coinbase.com/products/BTC-USD/ticker"
+)
+
+COINBASE_CANDLES_URL = (
+    "https://api.exchange.coinbase.com/products/BTC-USD/candles"
+)
 
 FIVE_MINUTES = 5 * 60
 
 
 @dataclass
 class MarketData:
-    btc_price: float
+    btc_open: float
+    btc_current: float
     window_start: int
     window_end: int
     seconds_remaining: int
 
 
-def get_btc_price() -> float:
+def get_btc_current_price() -> float:
     """
-    Get current BTC/USD price from Coinbase public API.
+    Get current BTC/USD price from Coinbase.
     """
 
     response = requests.get(
-        COINBASE_URL,
+        COINBASE_TICKER_URL,
         timeout=10,
         headers={
             "User-Agent": "polymarket-btc-paper-trader/1.0"
@@ -54,11 +61,6 @@ def get_btc_price() -> float:
 def get_current_5m_window() -> tuple[int, int, int]:
     """
     Calculate the current 5-minute UTC window.
-
-    Returns:
-        window_start
-        window_end
-        seconds_remaining
     """
 
     now = int(time.time())
@@ -71,19 +73,75 @@ def get_current_5m_window() -> tuple[int, int, int]:
     return window_start, window_end, seconds_remaining
 
 
-def get_market_data() -> MarketData:
+def get_btc_5m_open(window_start: int) -> float:
     """
-    Get the current BTC price and 5-minute market window.
+    Get the opening BTC price of the current 5-minute candle.
     """
 
-    btc_price = get_btc_price()
+    window_end = window_start + FIVE_MINUTES
+
+    response = requests.get(
+        COINBASE_CANDLES_URL,
+        params={
+            "granularity": FIVE_MINUTES,
+            "start": datetime.fromtimestamp(
+                window_start,
+                tz=timezone.utc,
+            ).isoformat(),
+            "end": datetime.fromtimestamp(
+                window_end,
+                tz=timezone.utc,
+            ).isoformat(),
+        },
+        timeout=10,
+        headers={
+            "User-Agent": "polymarket-btc-paper-trader/1.0"
+        },
+    )
+
+    response.raise_for_status()
+
+    candles = response.json()
+
+    if not candles:
+        raise ValueError("No 5-minute candle data returned.")
+
+    # Coinbase candle format:
+    # [timestamp, low, high, open, close, volume]
+
+    current_candle = None
+
+    for candle in candles:
+        candle_timestamp = int(candle[0])
+
+        if candle_timestamp == window_start:
+            current_candle = candle
+            break
+
+    if current_candle is None:
+        raise ValueError(
+            "Current 5-minute candle was not found."
+        )
+
+    return float(current_candle[3])
+
+
+def get_market_data() -> MarketData:
+    """
+    Get current BTC price and current 5-minute opening price.
+    """
 
     window_start, window_end, seconds_remaining = (
         get_current_5m_window()
     )
 
+    btc_open = get_btc_5m_open(window_start)
+
+    btc_current = get_btc_current_price()
+
     return MarketData(
-        btc_price=btc_price,
+        btc_open=btc_open,
+        btc_current=btc_current,
         window_start=window_start,
         window_end=window_end,
         seconds_remaining=seconds_remaining,
@@ -101,41 +159,75 @@ def format_timestamp(timestamp: int) -> str:
     ).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+def calculate_btc_move_pct(
+    btc_open: float,
+    btc_current: float,
+) -> float:
+    """
+    Calculate BTC percentage movement from candle open.
+    """
+
+    if btc_open <= 0:
+        raise ValueError("BTC opening price must be positive.")
+
+    return (
+        (btc_current - btc_open)
+        / btc_open
+        * 100
+    )
+
+
 def print_market_data(data: MarketData) -> None:
     """
-    Print market data in a readable format.
+    Print live BTC market data.
     """
 
-    print("=" * 50)
-    print("BTC MARKET DATA")
-    print("=" * 50)
+    move_pct = calculate_btc_move_pct(
+        data.btc_open,
+        data.btc_current,
+    )
 
-    print(f"BTC/USD:          ${data.btc_price:,.2f}")
+    print("=" * 60)
+    print("BTC MARKET DATA")
+    print("=" * 60)
+
+    print(f"BTC 5m Open:       ${data.btc_open:,.2f}")
+    print(f"BTC Current:       ${data.btc_current:,.2f}")
 
     print(
-        f"5m window start:  {format_timestamp(data.window_start)}"
+        f"BTC Movement:      {move_pct:+.4f}%"
     )
 
     print(
-        f"5m window end:    {format_timestamp(data.window_end)}"
+        f"5m window start:   "
+        f"{format_timestamp(data.window_start)}"
+    )
+
+    print(
+        f"5m window end:     "
+        f"{format_timestamp(data.window_end)}"
     )
 
     print(
         f"Seconds remaining: {data.seconds_remaining}"
     )
 
-    print("=" * 50)
+    print("=" * 60)
     print("PAPER MODE")
     print("NO REAL TRADING")
-    print("=" * 50)
+    print("NO API KEYS")
+    print("NO WALLET")
+    print("=" * 60)
 
 
 def run_test() -> None:
     """
-    Simple live public-data test.
+    Test live public BTC market data.
     """
 
-    print("Connecting to Coinbase public market data...")
+    print(
+        "Connecting to Coinbase public BTC market data..."
+    )
 
     try:
         data = get_market_data()
@@ -144,12 +236,21 @@ def run_test() -> None:
 
     except requests.RequestException as error:
         print()
-        print("ERROR: Could not retrieve Coinbase market data.")
+        print(
+            "ERROR: Could not retrieve Coinbase market data."
+        )
         print(error)
 
-    except (KeyError, ValueError, TypeError) as error:
+    except (
+        KeyError,
+        ValueError,
+        TypeError,
+        IndexError,
+    ) as error:
         print()
-        print("ERROR: Unexpected Coinbase response.")
+        print(
+            "ERROR: Unexpected market data response."
+        )
         print(error)
 
 
