@@ -4,133 +4,81 @@ on:
   workflow_dispatch:
 
 jobs:
-  paper-trader:
+  paper-test:
     runs-on: ubuntu-latest
 
     steps:
-
-      # ======================================================
-      # CHECKOUT
-      # ======================================================
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
-
-      # ======================================================
-      # PYTHON
-      # ======================================================
-
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-
-      # ======================================================
-      # DEPENDENCIES
-      # ======================================================
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests
 
-
-      # ======================================================
-      # STRATEGY TEST
-      # ======================================================
-
-      - name: Run strategy.py
-        run: python strategy.py
-
-
-      # ======================================================
-      # PAPER TRADER TEST SUITE
-      # ======================================================
-
-      - name: Run test_paper.py
-        run: python test_paper.py
-
-
-      # ======================================================
-      # INITIAL MARKET DATA TEST
-      # ======================================================
-
-      - name: Run market_data.py
-        run: python market_data.py
-
-
-      # ======================================================
-      # POLYMARKET MARKET DATA
-      # ======================================================
-
-      - name: Run polymarket_data.py
-        run: python polymarket_data.py
-
-
-      # ======================================================
-      # KRAKEN CONTROL TEST
-      # ======================================================
-
-      - name: Run kraken_test.py
-        run: python kraken_test.py
-
-
-      # ======================================================
-      # 30 MINUTE PAPER LIVE RUN
-      # ======================================================
-
-      - name: Run paper_live.py for 30 minutes
+      - name: Run strategy tests
         run: |
+          python strategy.py
 
+      - name: Run paper trader tests
+        run: |
+          python test_paper.py
+
+      - name: Test market data
+        run: |
+          python market_data.py
+
+      - name: Test Polymarket data
+        run: |
+          python polymarket_data.py
+
+      - name: Test Kraken data
+        run: |
+          python kraken_test.py
+
+      - name: Run 2 hour paper trading session
+        run: |
           echo "=================================================="
-          echo "30 MINUTE POLYMARKET BTC PAPER RUN"
+          echo "POLYMARKET BTC PAPER TRADER"
+          echo "2 HOUR PAPER TRADING SESSION"
           echo "=================================================="
+          echo ""
           echo "PAPER ONLY"
-          echo "NO REAL TRADING"
+          echo "NO API"
+          echo "NO REAL ORDERS"
+          echo "NO WALLET"
+          echo "NO REAL MONEY"
+          echo ""
+          echo "24 x 5-minute checks"
           echo "=================================================="
           echo ""
 
-          for i in {1..7}
-          do
-
+          for i in {1..24}; do
             echo ""
-            echo "##################################################"
-            echo "PAPER LIVE RUN $i / 7"
-            echo "##################################################"
+            echo "=================================================="
+            echo "PAPER TRADING CHECK $i / 24"
+            echo "=================================================="
             echo ""
 
             python paper_live.py
 
-            if [ "$i" -lt 7 ]; then
+            if [ "$i" -lt 24 ]; then
               echo ""
               echo "Waiting 5 minutes until next 5-minute window..."
               echo ""
-
               sleep 300
             fi
-
           done
 
           echo ""
           echo "=================================================="
-          echo "30 MINUTE PAPER RUN COMPLETE"
+          echo "2 HOUR PAPER TRADING SESSION COMPLETE"
           echo "=================================================="
-
-
-      # ======================================================
-      # SAFETY INFORMATION
-      # ======================================================
-
-      - name: Paper trading safety check
-        run: |
-          echo "=================================================="
-          echo "PAPER TRADING ONLY"
-          echo "=================================================="
-          echo "NO API KEYS"
-          echo "NO WALLET"
-          echo "NO PRIVATE KEYS"
-          echo "NO REAL ORDERS"
-          echo "NO REAL TRADING"
-          echo "=================================================="
+          echo ""
+          echo "PAPER ONLY - NO REAL TRADING"
+          echo ""
