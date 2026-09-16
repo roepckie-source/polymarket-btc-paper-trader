@@ -19,10 +19,6 @@ from paper_trader import PaperTrader
 # ============================================================
 
 BTC_OPEN = 100000.00
-
-# Stronger artificial move for the software test.
-#
-# This is NOT a performance claim.
 BTC_CURRENT = 100500.00
 
 SECONDS_REMAINING = 120
@@ -33,7 +29,7 @@ VOLATILITY = 0.04
 
 
 # ============================================================
-# TEST 1
+# TEST 1 - WINNING TRADE
 # ============================================================
 
 def test_winning_trade():
@@ -42,7 +38,10 @@ def test_winning_trade():
     print("TEST 1 - WINNING TRADE")
     print("=" * 60)
 
-    trader = PaperTrader()
+    trader = PaperTrader(
+        starting_bankroll=100.00,
+        results_file="test_winning.csv",
+    )
 
     opened = trader.open_trade(
         btc_open=BTC_OPEN,
@@ -54,17 +53,22 @@ def test_winning_trade():
 
     assert opened is True, "Trade should have opened"
 
-    trader.resolve_trade(
-        btc_final=BTC_CURRENT
+    # The strategy opened UP.
+    # Simulate UP winning.
+    resolved = trader.resolve_trade(
+        winning_side="UP"
     )
 
-    assert trader.wins == 1
+    assert resolved is True
+
+    assert trader.winning_trades == 1
+    assert trader.losing_trades == 0
 
     print("PASS: winning trade")
 
 
 # ============================================================
-# TEST 2
+# TEST 2 - LOSING TRADE
 # ============================================================
 
 def test_losing_trade():
@@ -73,7 +77,10 @@ def test_losing_trade():
     print("TEST 2 - LOSING TRADE")
     print("=" * 60)
 
-    trader = PaperTrader()
+    trader = PaperTrader(
+        starting_bankroll=100.00,
+        results_file="test_losing.csv",
+    )
 
     opened = trader.open_trade(
         btc_open=BTC_OPEN,
@@ -85,17 +92,22 @@ def test_losing_trade():
 
     assert opened is True, "Trade should have opened"
 
-    trader.resolve_trade(
-        btc_final=BTC_OPEN - 100
+    # The strategy opened UP.
+    # Simulate DOWN winning -> our UP position loses.
+    resolved = trader.resolve_trade(
+        winning_side="DOWN"
     )
 
-    assert trader.losses == 1
+    assert resolved is True
+
+    assert trader.winning_trades == 0
+    assert trader.losing_trades == 1
 
     print("PASS: losing trade")
 
 
 # ============================================================
-# TEST 3
+# TEST 3 - NO SIGNAL
 # ============================================================
 
 def test_no_signal():
@@ -104,7 +116,10 @@ def test_no_signal():
     print("TEST 3 - NO SIGNAL")
     print("=" * 60)
 
-    trader = PaperTrader()
+    trader = PaperTrader(
+        starting_bankroll=100.00,
+        results_file="test_no_signal.csv",
+    )
 
     opened = trader.open_trade(
         btc_open=BTC_OPEN,
@@ -116,11 +131,13 @@ def test_no_signal():
 
     assert opened is False
 
+    assert trader.position is None
+
     print("PASS: no signal")
 
 
 # ============================================================
-# TEST 4
+# TEST 4 - ONE POSITION ONLY
 # ============================================================
 
 def test_one_position_only():
@@ -129,7 +146,10 @@ def test_one_position_only():
     print("TEST 4 - ONE POSITION ONLY")
     print("=" * 60)
 
-    trader = PaperTrader()
+    trader = PaperTrader(
+        starting_bankroll=100.00,
+        results_file="test_one_position.csv",
+    )
 
     first = trader.open_trade(
         btc_open=BTC_OPEN,
@@ -151,11 +171,13 @@ def test_one_position_only():
 
     assert second is False
 
+    assert trader.position is not None
+
     print("PASS: one-position protection")
 
 
 # ============================================================
-# TEST 5
+# TEST 5 - SUMMARY
 # ============================================================
 
 def test_summary():
@@ -164,7 +186,10 @@ def test_summary():
     print("TEST 5 - SUMMARY")
     print("=" * 60)
 
-    trader = PaperTrader()
+    trader = PaperTrader(
+        starting_bankroll=100.00,
+        results_file="test_summary.csv",
+    )
 
     opened = trader.open_trade(
         btc_open=BTC_OPEN,
@@ -176,17 +201,19 @@ def test_summary():
 
     assert opened is True
 
-    trader.resolve_trade(
-        btc_final=BTC_CURRENT
+    resolved = trader.resolve_trade(
+        winning_side="UP"
     )
 
-    summary = trader.get_summary()
+    assert resolved is True
+
+    summary = trader.summary()
 
     assert summary is not None
 
-    assert trader.wins == 1
-
-    assert trader.losses == 0
+    assert summary["total_trades"] == 1
+    assert summary["wins"] == 1
+    assert summary["losses"] == 0
 
     print("PASS: summary calculations")
 
