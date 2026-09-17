@@ -26,9 +26,7 @@ import requests
 # ============================================================
 
 FORSEE_API_BASE = "https://api.forsee.market/v1"
-
 MARKET_ID = "BTC_FIVE_MINUTES"
-
 REQUEST_TIMEOUT = 15
 
 
@@ -37,12 +35,7 @@ REQUEST_TIMEOUT = 15
 # ============================================================
 
 def get_api_key():
-    """
-    Read Forsee API key from environment.
-
-    Expected:
-        FORSEE_API_KEY
-    """
+    """Read the Forsee API key from the environment."""
 
     api_key = os.getenv("FORSEE_API_KEY")
 
@@ -56,17 +49,15 @@ def get_api_key():
 
 
 # ============================================================
-# HELPERS
+# TIME HELPERS
 # ============================================================
 
 def milliseconds_to_seconds(value):
     """
-    Convert Forsee millisecond values to seconds.
+    Convert a millisecond value to seconds.
 
     Example:
-        138229 -> 138.229
-
-    Returns None if the value is missing or invalid.
+        208291 -> 208.291
     """
 
     if value is None:
@@ -78,13 +69,29 @@ def milliseconds_to_seconds(value):
         return None
 
 
+def seconds_value(value):
+    """
+    Convert an already-second value to float.
+
+    Forsee's timeRemaining is already in seconds.
+    """
+
+    if value is None:
+        return None
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 # ============================================================
 # GET MARKET DATA
 # ============================================================
 
 def get_market_data():
     """
-    Read current Forsee BTC 5-minute market.
+    Read the current Forsee BTC 5-minute market.
 
     READ ONLY.
 
@@ -146,17 +153,26 @@ def get_market_data():
     # RAW TIME VALUES
     # --------------------------------------------------------
 
-    raw_time_remaining = current_round.get("timeRemaining")
-    raw_time_to_lock = current_round.get("timeToLock")
+    raw_time_remaining = current_round.get(
+        "timeRemaining"
+    )
+
+    raw_time_to_lock = current_round.get(
+        "timeToLock"
+    )
+
     raw_time_to_cutoff = current_round.get(
         "timeToOrderCutoff"
     )
 
     # --------------------------------------------------------
-    # CONVERT MILLISECONDS -> SECONDS
+    # IMPORTANT:
+    # timeRemaining = SECONDS
+    # timeToLock = MILLISECONDS
+    # timeToOrderCutoff = MILLISECONDS
     # --------------------------------------------------------
 
-    time_remaining_seconds = milliseconds_to_seconds(
+    time_remaining_seconds = seconds_value(
         raw_time_remaining
     )
 
@@ -182,22 +198,49 @@ def get_market_data():
         # Odds
         "odds_up": data.get("oddsUp"),
         "odds_down": data.get("oddsDown"),
-        "percent_up": data.get("percentUp"),
-        "percent_down": data.get("percentDown"),
-        "odds_source": data.get("oddsSource"),
+
+        "percent_up": data.get(
+            "percentUp"
+        ),
+
+        "percent_down": data.get(
+            "percentDown"
+        ),
+
+        "odds_source": data.get(
+            "oddsSource"
+        ),
 
         # Pools
-        "pool_up": data.get("poolUp"),
-        "pool_down": data.get("poolDown"),
-        "total_pool": data.get("totalPool"),
+        "pool_up": data.get(
+            "poolUp"
+        ),
+
+        "pool_down": data.get(
+            "poolDown"
+        ),
+
+        "total_pool": data.get(
+            "totalPool"
+        ),
 
         # Limits
-        "min_bet": data.get("minBet"),
-        "max_bet": data.get("maxBet"),
+        "min_bet": data.get(
+            "minBet"
+        ),
+
+        "max_bet": data.get(
+            "maxBet"
+        ),
 
         # Round
-        "round_id": current_round.get("id"),
-        "round_number": current_round.get("roundNumber"),
+        "round_id": current_round.get(
+            "id"
+        ),
+
+        "round_number": current_round.get(
+            "roundNumber"
+        ),
 
         "round_start": current_round.get(
             "startTime"
@@ -211,15 +254,21 @@ def get_market_data():
             "endTime"
         ),
 
-        # Raw timing values
+        # Raw timing
         "time_remaining_raw": raw_time_remaining,
+
         "time_to_lock_raw": raw_time_to_lock,
+
         "time_to_order_cutoff_raw": raw_time_to_cutoff,
 
-        # Timing in seconds
+        # Converted timing
         "time_remaining": time_remaining_seconds,
+
         "time_to_lock": time_to_lock_seconds,
-        "time_to_order_cutoff": time_to_cutoff_seconds,
+
+        "time_to_order_cutoff": (
+            time_to_cutoff_seconds
+        ),
 
         # Order status
         "accepting_orders": current_round.get(
@@ -250,7 +299,7 @@ def get_market_data():
 
 
 # ============================================================
-# PRINT DATA
+# PRINT MARKET DATA
 # ============================================================
 
 def print_market_data(data):
@@ -271,9 +320,20 @@ def print_market_data(data):
     # MARKET
     # --------------------------------------------------------
 
-    print(f"Market ID:             {data['market_id']}")
-    print(f"Crypto:                {data['crypto']}")
-    print(f"Timeframe:             {data['timeframe']}")
+    print(
+        f"Market ID:             "
+        f"{data['market_id']}"
+    )
+
+    print(
+        f"Crypto:                "
+        f"{data['crypto']}"
+    )
+
+    print(
+        f"Timeframe:             "
+        f"{data['timeframe']}"
+    )
 
     # --------------------------------------------------------
     # ROUND
@@ -344,13 +404,12 @@ def print_market_data(data):
             * 100
         )
 
-        direction = (
-            "UP"
-            if movement > 0
-            else "DOWN"
-            if movement < 0
-            else "FLAT"
-        )
+        if movement > 0:
+            direction = "UP"
+        elif movement < 0:
+            direction = "DOWN"
+        else:
+            direction = "FLAT"
 
         print(
             f"BTC Movement:          "
@@ -403,8 +462,14 @@ def print_market_data(data):
     print("TIMING")
     print("-" * 60)
 
-    time_remaining = data["time_remaining"]
-    time_to_lock = data["time_to_lock"]
+    time_remaining = data[
+        "time_remaining"
+    ]
+
+    time_to_lock = data[
+        "time_to_lock"
+    ]
+
     time_to_cutoff = data[
         "time_to_order_cutoff"
     ]
@@ -484,7 +549,7 @@ def print_market_data(data):
     )
 
     # --------------------------------------------------------
-    # RAW VALUES
+    # RAW API TIMING
     # --------------------------------------------------------
 
     print()
@@ -511,12 +576,14 @@ def print_market_data(data):
     # --------------------------------------------------------
 
     print()
+
     print(
         f"Read UTC:              "
         f"{data['read_timestamp']}"
     )
 
     print()
+
     print("=" * 60)
     print("FORSEE READ TEST COMPLETE")
     print("=" * 60)
@@ -548,6 +615,10 @@ def main():
 
         sys.exit(1)
 
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
     main()
