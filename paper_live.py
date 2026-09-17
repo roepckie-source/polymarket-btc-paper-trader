@@ -1,6 +1,6 @@
 import csv
+import json
 import os
-import time
 from datetime import datetime, timezone
 
 import requests
@@ -68,7 +68,6 @@ def save_bankroll(bankroll):
 # ============================================================
 
 def load_open_trade():
-
     if not os.path.exists(TRADES_FILE):
         return None
 
@@ -91,7 +90,6 @@ def load_open_trade():
 # ============================================================
 
 def next_trade_id():
-
     if not os.path.exists(TRADES_FILE):
         return 1
 
@@ -145,15 +143,17 @@ TRADE_FIELDS = [
     "result",
     "market_slug",
     "condition_id",
+
+    # IMPORTANT:
+    # Needed for BTC fallback resolution.
+    "window_start",
 ]
 
 
 def append_trade(data):
-
     exists = os.path.exists(TRADES_FILE)
 
     with open(TRADES_FILE, "a", newline="", encoding="utf-8") as f:
-
         writer = csv.DictWriter(
             f,
             fieldnames=TRADE_FIELDS,
@@ -167,9 +167,7 @@ def append_trade(data):
 
 
 def rewrite_trades(rows):
-
     with open(TRADES_FILE, "w", newline="", encoding="utf-8") as f:
-
         writer = csv.DictWriter(
             f,
             fieldnames=TRADE_FIELDS,
@@ -185,11 +183,10 @@ def rewrite_trades(rows):
 # ============================================================
 
 def get_fee_info(condition_id, token_id):
-
     """
     Get fee information for the actual Polymarket market.
 
-    Primary source:
+    Primary:
         GET /clob-markets/{condition_id}
 
     Fallback:
@@ -208,9 +205,7 @@ def get_fee_info(condition_id, token_id):
     # --------------------------------------------------------
 
     if condition_id:
-
         try:
-
             url = f"{CLOB_BASE_URL}/clob-markets/{condition_id}"
 
             response = requests.get(
@@ -225,7 +220,6 @@ def get_fee_info(condition_id, token_id):
             fd = data.get("fd")
 
             if isinstance(fd, dict):
-
                 rate = float(fd.get("r", 0.0))
 
                 if rate >= 0:
@@ -236,7 +230,6 @@ def get_fee_info(condition_id, token_id):
                     }
 
         except Exception as e:
-
             print(
                 f"WARNING: Could not read CLOB market fee info: {e}"
             )
@@ -246,9 +239,7 @@ def get_fee_info(condition_id, token_id):
     # --------------------------------------------------------
 
     if token_id:
-
         try:
-
             url = f"{CLOB_BASE_URL}/fee-rate"
 
             response = requests.get(
@@ -272,7 +263,6 @@ def get_fee_info(condition_id, token_id):
             }
 
         except Exception as e:
-
             print(
                 f"WARNING: Could not read fee-rate: {e}"
             )
@@ -293,14 +283,13 @@ def get_fee_info(condition_id, token_id):
 # ============================================================
 
 def calculate_fee(contracts, price, fee_rate):
-
     """
-    Polymarket documented formula:
+    Polymarket formula:
 
         fee = C * feeRate * p * (1-p)
 
-    C     = number of shares
-    p     = share price
+    C = number of shares
+    p = share price
     """
 
     if contracts <= 0:
@@ -319,12 +308,10 @@ def calculate_fee(contracts, price, fee_rate):
 # ============================================================
 
 def get_polymarket_market_by_slug(slug):
-
     if not slug:
         return None
 
     try:
-
         url = f"{GAMMA_BASE_URL}/events/slug/{slug}"
 
         response = requests.get(
@@ -337,7 +324,6 @@ def get_polymarket_market_by_slug(slug):
         return response.json()
 
     except Exception as e:
-
         print(
             f"WARNING: Could not load Polymarket event "
             f"{slug}: {e}"
@@ -351,18 +337,16 @@ def get_polymarket_market_by_slug(slug):
 # ============================================================
 
 def get_resolved_side(market_slug, expected_side):
-
     """
     Try to determine the actual resolved Polymarket outcome.
 
     Returns:
-
         UP
         DOWN
         None
 
     None means that the market is not yet conclusively
-    resolved from the public market data.
+    resolved from public market data.
     """
 
     event = get_polymarket_market_by_slug(market_slug)
@@ -382,14 +366,12 @@ def get_resolved_side(market_slug, expected_side):
 
         if isinstance(outcomes, str):
             try:
-                import json
                 outcomes = json.loads(outcomes)
             except Exception:
                 outcomes = None
 
         if isinstance(prices, str):
             try:
-                import json
                 prices = json.loads(prices)
             except Exception:
                 prices = None
@@ -401,7 +383,6 @@ def get_resolved_side(market_slug, expected_side):
             continue
 
         try:
-
             normalized = [
                 str(x).strip().lower()
                 for x in outcomes
@@ -412,7 +393,10 @@ def get_resolved_side(market_slug, expected_side):
                 for x in prices
             ]
 
-            # Resolved UP
+            # ------------------------------------------------
+            # RESOLVED UP
+            # ------------------------------------------------
+
             for i, outcome in enumerate(normalized):
 
                 if outcome in ("up", "yes"):
@@ -420,7 +404,10 @@ def get_resolved_side(market_slug, expected_side):
                     if numeric_prices[i] >= 0.999:
                         return "UP"
 
-            # Resolved DOWN
+            # ------------------------------------------------
+            # RESOLVED DOWN
+            # ------------------------------------------------
+
             for i, outcome in enumerate(normalized):
 
                 if outcome in ("down", "no"):
@@ -439,16 +426,14 @@ def get_resolved_side(market_slug, expected_side):
 # ============================================================
 
 def fallback_btc_resolution(open_trade):
-
     """
-    Fallback only.
+    FALLBACK ONLY.
 
     If Polymarket's public market resolution is not yet
     available, use the next 5-minute BTC open as the
     provisional reference.
 
-    This is explicitly marked as fallback and should NOT be
-    confused with the actual Polymarket resolution.
+    This is NOT the official Polymarket resolution.
     """
 
     try:
@@ -463,12 +448,18 @@ def fallback_btc_resolution(open_trade):
             open_trade["window_start"]
         )
 
+        # The next 5-minute candle must have started.
         if current_window_start <= trade_window_start:
             return None
 
-        btc_close = float(btc_data["btc_open"])
+        # Next candle open = provisional BTC close.
+        btc_close = float(
+            btc_data["btc_open"]
+        )
 
-        btc_open = float(open_trade["btc_open"])
+        btc_open = float(
+            open_trade["btc_open"]
+        )
 
         if btc_close > btc_open:
             return "UP"
@@ -504,7 +495,7 @@ def resolve_open_trade(open_trade, bankroll):
     print(f"Market:   {market_slug}")
 
     # --------------------------------------------------------
-    # FIRST: REAL POLYMARKET MARKET RESOLUTION
+    # FIRST: OFFICIAL POLYMARKET PUBLIC RESOLUTION
     # --------------------------------------------------------
 
     winning_side = get_resolved_side(
@@ -524,6 +515,7 @@ def resolve_open_trade(open_trade, bankroll):
         print(
             "Polymarket resolution not yet available."
         )
+
         print(
             "Using BTC 5m fallback resolution temporarily."
         )
@@ -536,12 +528,15 @@ def resolve_open_trade(open_trade, bankroll):
             "BTC 5m fallback - NOT official Polymarket resolution"
         )
 
+    # --------------------------------------------------------
+    # STILL OPEN
+    # --------------------------------------------------------
+
     if winning_side is None:
 
         print()
-        print(
-            "TRADE REMAINS OPEN"
-        )
+        print("TRADE REMAINS OPEN")
+
         print(
             "No conclusive resolution available yet."
         )
@@ -552,9 +547,17 @@ def resolve_open_trade(open_trade, bankroll):
     # NUMBERS
     # --------------------------------------------------------
 
-    position = float(open_trade["position_size"])
-    contracts = float(open_trade["contracts"])
-    market_price = float(open_trade["market_price"])
+    position = float(
+        open_trade["position_size"]
+    )
+
+    contracts = float(
+        open_trade["contracts"]
+    )
+
+    market_price = float(
+        open_trade["market_price"]
+    )
 
     fee_rate = float(
         open_trade.get("fee_rate") or 0
@@ -564,7 +567,12 @@ def resolve_open_trade(open_trade, bankroll):
         open_trade.get("fee_usdc") or 0
     )
 
-    payout = contracts if winning_side == side else 0.0
+    # Winning shares pay $1 each.
+    payout = (
+        contracts
+        if winning_side == side
+        else 0.0
+    )
 
     gross_pnl = payout - position
 
@@ -615,15 +623,25 @@ def resolve_open_trade(open_trade, bankroll):
 
     try:
 
-        with open(TRADES_FILE, "r", newline="", encoding="utf-8") as f:
-            rows = list(csv.DictReader(f))
+        with open(
+            TRADES_FILE,
+            "r",
+            newline="",
+            encoding="utf-8",
+        ) as f:
+
+            rows = list(
+                csv.DictReader(f)
+            )
 
         for row in rows:
 
             if row["trade_id"] == trade_id:
 
                 row["status"] = "CLOSED"
+
                 row["resolved_at"] = utc_now()
+
                 row["btc_close"] = (
                     f"{btc_close:.8f}"
                     if btc_close
@@ -636,9 +654,18 @@ def resolve_open_trade(open_trade, bankroll):
                     else ""
                 )
 
-                row["payout"] = f"{payout:.8f}"
-                row["gross_pnl"] = f"{gross_pnl:.8f}"
-                row["net_pnl"] = f"{net_pnl:.8f}"
+                row["payout"] = (
+                    f"{payout:.8f}"
+                )
+
+                row["gross_pnl"] = (
+                    f"{gross_pnl:.8f}"
+                )
+
+                row["net_pnl"] = (
+                    f"{net_pnl:.8f}"
+                )
+
                 row["result"] = result
 
                 break
@@ -666,18 +693,47 @@ def resolve_open_trade(open_trade, bankroll):
     print(f"Side:              {side}")
 
     if btc_close:
-        print(f"BTC Open:          ${btc_open:,.2f}")
-        print(f"BTC Close:         ${btc_close:,.2f}")
 
-    print(f"Winning Side:      {winning_side}")
-    print(f"Resolution:        {resolution_source}")
-    print(f"Result:            {result}")
+        print(
+            f"BTC Open:          ${btc_open:,.2f}"
+        )
 
-    print(f"Position:          ${position:.2f}")
-    print(f"Contracts:         {contracts:.4f}")
-    print(f"Gross P&L:         ${gross_pnl:+.2f}")
-    print(f"Trading Fee:       ${fee_usdc:.5f}")
-    print(f"Net P&L:           ${net_pnl:+.2f}")
+        print(
+            f"BTC Close:         ${btc_close:,.2f}"
+        )
+
+    print(
+        f"Winning Side:      {winning_side}"
+    )
+
+    print(
+        f"Resolution:        {resolution_source}"
+    )
+
+    print(
+        f"Result:             {result}"
+    )
+
+    print(
+        f"Position:          ${position:.2f}"
+    )
+
+    print(
+        f"Contracts:         {contracts:.4f}"
+    )
+
+    print(
+        f"Gross P&L:         ${gross_pnl:+.2f}"
+    )
+
+    print(
+        f"Trading Fee:       ${fee_usdc:.5f}"
+    )
+
+    print(
+        f"Net P&L:           ${net_pnl:+.2f}"
+    )
+
     print(
         f"Bankroll:          "
         f"${bankroll:.2f} -> ${new_bankroll:.2f}"
@@ -702,10 +758,18 @@ def open_paper_trade(
     trade_id = next_trade_id()
 
     side = result.side
-    position_size = float(result.position_size)
-    market_price = float(result.market_price)
 
-    contracts = position_size / market_price
+    position_size = float(
+        result.position_size
+    )
+
+    market_price = float(
+        result.market_price
+    )
+
+    contracts = (
+        position_size / market_price
+    )
 
     condition_id = polymarket_data.get(
         "condition_id",
@@ -722,10 +786,16 @@ def open_paper_trade(
     if isinstance(token_ids, list) and token_ids:
 
         if side.upper() == "UP":
-            token_id = str(token_ids[0])
+
+            token_id = str(
+                token_ids[0]
+            )
 
         elif len(token_ids) > 1:
-            token_id = str(token_ids[1])
+
+            token_id = str(
+                token_ids[1]
+            )
 
     # --------------------------------------------------------
     # FEE
@@ -759,58 +829,78 @@ def open_paper_trade(
     print("PAPER TRADE OPENED")
     print("=" * 70)
 
-    print(f"Trade ID:       {trade_id}")
-    print(f"Side:           {side}")
+    print(
+        f"Trade ID:       {trade_id}"
+    )
+
+    print(
+        f"Side:           {side}"
+    )
+
     print(
         f"BTC Open:       "
         f"${float(btc_data['btc_open']):,.2f}"
     )
+
     print(
         f"BTC Current:    "
         f"${float(btc_data['btc_current']):,.2f}"
     )
+
     print(
         f"Market Price:   ${market_price:.4f}"
     )
+
     print(
         f"Probability:    "
         f"{float(result.probability) * 100:.2f}%"
     )
+
     print(
         f"Edge:           "
         f"{float(result.edge) * 100:.2f}%"
     )
+
     print(
         f"Kelly:          "
         f"{float(result.kelly_fraction) * 100:.2f}%"
     )
+
     print(
         f"Position Size:  ${position_size:.2f}"
     )
+
     print(
         f"Contracts:      {contracts:.4f}"
     )
+
     print(
         f"Fee Rate:       "
         f"{fee_rate * 100:.4f}%"
     )
+
     print(
         f"Fee Rate BPS:   {fee_rate_bps}"
     )
+
     print(
         f"Estimated Fee:  ${fee_usdc:.5f}"
     )
+
     print(
         f"Market:         "
         f"{polymarket_data.get('market_slug', '')}"
     )
+
     print(
         f"Fee Source:     {fee_info['source']}"
     )
 
     print()
+
     print("STATUS: OPEN")
     print("PAPER ONLY - NO REAL ORDER")
+
     print("=" * 70)
 
     # --------------------------------------------------------
@@ -819,34 +909,82 @@ def open_paper_trade(
 
     row = {
         "trade_id": trade_id,
+
         "opened_at": utc_now(),
+
         "resolved_at": "",
+
         "status": "OPEN",
+
         "side": side,
-        "btc_open": f"{float(btc_data['btc_open']):.8f}",
-        "btc_entry": f"{float(btc_data['btc_current']):.8f}",
+
+        "btc_open": (
+            f"{float(btc_data['btc_open']):.8f}"
+        ),
+
+        "btc_entry": (
+            f"{float(btc_data['btc_current']):.8f}"
+        ),
+
         "btc_close": "",
+
         "btc_movement_percent": (
             f"{float(btc_data['movement_percent']):.8f}"
         ),
-        "market_price": f"{market_price:.8f}",
-        "probability": f"{float(result.probability):.8f}",
-        "edge": f"{float(result.edge):.8f}",
-        "kelly": f"{float(result.kelly_fraction):.8f}",
-        "position_size": f"{position_size:.8f}",
-        "contracts": f"{contracts:.8f}",
-        "fee_rate": f"{fee_rate:.8f}",
-        "fee_rate_bps": str(fee_rate_bps),
-        "fee_usdc": f"{fee_usdc:.8f}",
+
+        "market_price": (
+            f"{market_price:.8f}"
+        ),
+
+        "probability": (
+            f"{float(result.probability):.8f}"
+        ),
+
+        "edge": (
+            f"{float(result.edge):.8f}"
+        ),
+
+        "kelly": (
+            f"{float(result.kelly_fraction):.8f}"
+        ),
+
+        "position_size": (
+            f"{position_size:.8f}"
+        ),
+
+        "contracts": (
+            f"{contracts:.8f}"
+        ),
+
+        "fee_rate": (
+            f"{fee_rate:.8f}"
+        ),
+
+        "fee_rate_bps": str(
+            fee_rate_bps
+        ),
+
+        "fee_usdc": (
+            f"{fee_usdc:.8f}"
+        ),
+
         "payout": "",
+
         "gross_pnl": "",
+
         "net_pnl": "",
+
         "result": "",
+
         "market_slug": polymarket_data.get(
             "market_slug",
             "",
         ),
+
         "condition_id": condition_id,
+
+        # IMPORTANT:
+        # This was missing from TRADE_FIELDS before.
         "window_start": btc_data.get(
             "window_start",
             "",
@@ -891,6 +1029,7 @@ def main():
     if open_trade:
 
         print()
+
         print(
             f"Existing open trade detected: "
             f"#{open_trade['trade_id']}"
@@ -901,7 +1040,7 @@ def main():
             bankroll,
         )
 
-        # Reload in case trade is still open
+        # Reload in case trade is still open.
         open_trade = load_open_trade()
 
         if open_trade:
@@ -910,6 +1049,7 @@ def main():
             print(
                 "Existing trade remains OPEN."
             )
+
             print(
                 "No new trade will be opened."
             )
@@ -1012,7 +1152,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # STRATEGY
+    # STRATEGY INPUT
     # --------------------------------------------------------
 
     movement = float(
@@ -1060,12 +1200,20 @@ def main():
     from strategy import evaluate
 
     result = evaluate(
-        btc_open=float(btc_data["btc_open"]),
-        btc_current=float(btc_data["btc_current"]),
+        btc_open=float(
+            btc_data["btc_open"]
+        ),
+
+        btc_current=float(
+            btc_data["btc_current"]
+        ),
+
         market_price=market_price,
+
         seconds_remaining=int(
             btc_data["seconds_remaining"]
         ),
+
         bankroll=bankroll,
     )
 
@@ -1157,6 +1305,10 @@ def main():
     print("=" * 70)
     print("PAPER ONLY - NO REAL TRADING")
 
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
     main()
