@@ -3,40 +3,45 @@ FORSEE BTC 5-MINUTE PAPER STRATEGY
 
 PAPER ONLY
 NO ORDERS
+NO BETS
 NO WALLET
 NO LIVE TRADING
 
-Purpose:
-- Read current Forsee BTC 5-minute market
-- Calculate BTC movement
-- Determine UP/DOWN direction
-- Calculate implied probability from Forsee odds
-- Calculate market edge
-- Apply minimum movement / probability / edge filters
-- Calculate quarter-Kelly position size
-- Return a paper signal
+This version uses an independent probability model.
 
 IMPORTANT:
-This file does NOT place orders.
+The Forsee published probability is NOT used as our prediction.
+
+Our probability is calculated from:
+    BTC movement
+    remaining time
+    assumed BTC volatility
+
+The Forsee odds are used only as the market price.
+
+Forsee documentation:
+- BTC 5m outcome uses final 60-second TWAP
+- oddsUp / oddsDown are live market quotes
+- 2% platform fee is applied to winnings
 """
 
+import math
 from dataclasses import dataclass
-from typing import Optional
 
 from forsee_prediction_data import get_market_data
 
 
 # ============================================================
-# STRATEGY CONFIGURATION
+# CONFIGURATION
 # ============================================================
 
-# Minimum BTC movement required to consider a trade.
+# Minimum absolute BTC movement required.
 MIN_BTC_MOVE_PCT = 0.06
 
-# Minimum probability required.
+# Minimum independent model probability.
 MIN_PROBABILITY = 0.80
 
-# Minimum edge required.
+# Minimum net edge after Forsee fee.
 MIN_EDGE = 0.05
 
 # Quarter Kelly.
@@ -45,16 +50,24 @@ KELLY_FRACTION = 0.25
 # Paper bankroll.
 DEFAULT_BANKROLL = 100.00
 
-# Minimum and maximum paper position.
+# Position limits.
 MIN_POSITION_USD = 5.00
 MAX_POSITION_USD = 25.00
 
-# Never enter if less than this many seconds remain.
+# Never enter this close to settlement.
 MIN_SECONDS_REMAINING = 10.0
 
-# Forsee does not accept orders after cutoff.
-# We require accepting_orders == True.
-REQUIRE_ACCEPTING_ORDERS = True
+# Forsee fee on winnings.
+FORSEE_WINNING_FEE = 0.02
+
+# Assumed BTC daily volatility.
+#
+# This is a PAPER-MODEL assumption.
+# It must later be calibrated against historical data.
+DEFAULT_DAILY_VOLATILITY = 0.04
+
+# Final TWAP period for Forsee BTC 5m.
+FINAL_TWAP_SECONDS = 60.0
 
 
 # ============================================================
@@ -72,15 +85,21 @@ class ForseeStrategyResult:
     btc_movement_pct: float
 
     odds: float
-    implied_probability: float
 
-    market_probability: float
+    model_probability: float
+    forsee_probability: float
+    break_even_probability: float
+
     edge: float
 
-    kelly_fraction: float
+    gross_kelly: float
+    quarter_kelly: float
+
     position_size: float
 
     seconds_remaining: float
+    seconds_to_cutoff: float
+
     accepting_orders: bool
 
     reason: str
@@ -119,63 +138,220 @@ def calculate_btc_movement(
     )
 
 
-def calculate_implied_probability(odds):
+def normal_cdf(z):
     """
-    Convert decimal odds to implied probability.
+    Standard normal cumulative distribution function.
+    """
 
-    Example:
+    return 0.5 * (
+        1.0
+        + math.erf(
+            z / math.sqrt(2.0)
+        )
+    )
 
-        odds = 2.00
-        probability = 0.50
 
-        odds = 1.25
-        probability = 0.80
+# ============================================================
+# INDEPENDENT BTC PROBABILITY MODEL
+# ============================================================
 
+def calculate_model_probability(
+    movement_pct,
+    seconds_remaining,
+    daily_volatility=DEFAULT_DAILY_VOLATILITY,
+):
+    """
+    Estimate probability that the final Forsee TWAP
+    finishes on the current side of the round open.
+
+    Model assumptions:
+
+    1. Current BTC price is the current state.
+    2. Future price changes are approximately normally
+       distributed.
+    3. Volatility scales with square root of time.
+    4. Final 60-second TWAP is the settlement reference.
+    5. No directional drift is assumed.
+
+    This is a transparent baseline model.
+    It is NOT yet historically calibrated.
+
+    Returns:
+        Probability between 0 and 1.
+    """
+
+    movement_pct = safe_float(
+        movement_pct
+    )
+
+    seconds_remaining = safe_float(
+        seconds_remaining
+    )
+
+    daily_volatility = safe_float(
+        daily_volatility
+    )
+
+    if daily_volatility <= 0:
+        return 0.50
+
+    if seconds_remaining <= 0:
+        return (
+            1.0
+            if movement_pct > 0
+            else 0.0
+            if movement_pct < 0
+            else 0.50
+        )
+
+    # --------------------------------------------------------
+    # Effective uncertainty period
+    #
+    # Forsee BTC 5m settles using the final 60-second TWAP.
+    #
+    # We therefore use the time until the beginning of
+    # that final TWAP as the main uncertainty period.
+    # --------------------------------------------------------
+
+    effective_seconds = max(
+        seconds_remaining
+        - FINAL_TWAP_SECONDS,
+        1.0,
+    )
+
+    # --------------------------------------------------------
+    # Volatility scales with sqrt(time).
+    #
+    # daily_volatility is e.g. 0.04 = 4%.
+    # One day = 86,400 seconds.
+    # --------------------------------------------------------
+
+    sigma = (
+        daily_volatility
+        * math.sqrt(
+            effective_seconds
+            / 86400.0
+        )
+    )
+
+    if sigma <= 0:
+        return (
+            1.0
+            if movement_pct > 0
+            else 0.0
+        )
+
+    # Convert percent movement into decimal.
+    movement_decimal = (
+        movement_pct / 100.0
+    )
+
+    # --------------------------------------------------------
+    # Z score.
+    #
+    # Example:
+    #
+    # current price is above open:
+    #
+    #     movement > 0
+    #
+    # probability of finishing above open:
+    #
+    #     Phi(movement / sigma)
+    # --------------------------------------------------------
+
+    z = (
+        movement_decimal
+        / sigma
+    )
+
+    probability_up = normal_cdf(z)
+
+    probability_up = min(
+        max(
+            probability_up,
+            0.0001,
+        ),
+        0.9999,
+    )
+
+    return probability_up
+
+
+# ============================================================
+# FORSEE BREAK-EVEN PROBABILITY
+# ============================================================
+
+def calculate_break_even_probability(
+    odds,
+):
+    """
+    Calculate the probability required to break even
+    after Forsee's 2% fee on winnings.
+
+    Decimal odds:
+
+        odds = 1.50
+
+    Gross profit on $1:
+
+        0.50
+
+    After 2% winnings fee:
+
+        0.50 * 0.98
+
+    Net break-even probability:
+
+        1 / (1 + net_profit)
     """
 
     odds = safe_float(odds)
 
     if odds <= 1.0:
-        return 0.0
+        return 1.0
 
-    return 1.0 / odds
+    gross_profit = odds - 1.0
 
-
-def calculate_edge(
-    estimated_probability,
-    market_probability,
-):
-    """
-    Edge = estimated probability - market probability.
-    """
-
-    return (
-        estimated_probability
-        - market_probability
+    net_profit = (
+        gross_profit
+        * (1.0 - FORSEE_WINNING_FEE)
     )
 
+    if net_profit <= 0:
+        return 1.0
+
+    return 1.0 / (
+        1.0 + net_profit
+    )
+
+
+# ============================================================
+# NET KELLY
+# ============================================================
 
 def calculate_kelly(
     probability,
     odds,
 ):
     """
-    Standard Kelly criterion for decimal odds.
+    Calculate Kelly using the net payout after
+    Forsee's 2% winning fee.
 
-    b = odds - 1
+    b = net profit per $1 stake
 
-    Kelly =
+    Kelly:
+
         (b*p - q) / b
-
-    where:
-        p = probability of winning
-        q = 1-p
-
-    Result is capped at zero.
     """
 
-    probability = safe_float(probability)
-    odds = safe_float(odds)
+    probability = safe_float(
+        probability
+    )
+
+    odds = safe_float(
+        odds
+    )
 
     if odds <= 1.0:
         return 0.0
@@ -186,15 +362,35 @@ def calculate_kelly(
     if probability >= 1.0:
         probability = 0.999999
 
-    b = odds - 1.0
+    gross_profit = odds - 1.0
+
+    net_profit = (
+        gross_profit
+        * (1.0 - FORSEE_WINNING_FEE)
+    )
+
+    if net_profit <= 0:
+        return 0.0
+
     q = 1.0 - probability
 
     kelly = (
-        (b * probability) - q
-    ) / b
+        (
+            net_profit
+            * probability
+        )
+        - q
+    ) / net_profit
 
-    return max(0.0, kelly)
+    return max(
+        0.0,
+        kelly,
+    )
 
+
+# ============================================================
+# POSITION SIZE
+# ============================================================
 
 def calculate_position_size(
     bankroll,
@@ -204,14 +400,23 @@ def calculate_position_size(
     Apply quarter-Kelly and position limits.
     """
 
-    bankroll = safe_float(bankroll)
+    bankroll = safe_float(
+        bankroll
+    )
 
-    kelly = max(0.0, kelly)
+    kelly = max(
+        0.0,
+        kelly,
+    )
+
+    quarter_kelly = (
+        kelly
+        * KELLY_FRACTION
+    )
 
     position = (
         bankroll
-        * kelly
-        * KELLY_FRACTION
+        * quarter_kelly
     )
 
     if position < MIN_POSITION_USD:
@@ -236,19 +441,32 @@ def evaluate(
     """
     Evaluate current Forsee market.
 
-    No orders are placed.
+    PAPER ONLY.
+    No order is placed.
     """
 
     btc_open = safe_float(
-        market_data.get("btc_open")
+        market_data.get(
+            "btc_open"
+        )
     )
 
     btc_current = safe_float(
-        market_data.get("btc_current")
+        market_data.get(
+            "btc_current"
+        )
     )
 
     seconds_remaining = safe_float(
-        market_data.get("time_remaining")
+        market_data.get(
+            "time_remaining"
+        )
+    )
+
+    seconds_to_cutoff = safe_float(
+        market_data.get(
+            "time_to_order_cutoff"
+        )
     )
 
     accepting_orders = bool(
@@ -259,19 +477,33 @@ def evaluate(
     )
 
     odds_up = safe_float(
-        market_data.get("odds_up")
+        market_data.get(
+            "odds_up"
+        )
     )
 
     odds_down = safe_float(
-        market_data.get("odds_down")
+        market_data.get(
+            "odds_down"
+        )
     )
 
-    percent_up = safe_float(
-        market_data.get("percent_up")
+    forsee_probability_up = (
+        safe_float(
+            market_data.get(
+                "percent_up"
+            )
+        )
+        / 100.0
     )
 
-    percent_down = safe_float(
-        market_data.get("percent_down")
+    forsee_probability_down = (
+        safe_float(
+            market_data.get(
+                "percent_down"
+            )
+        )
+        / 100.0
     )
 
     # --------------------------------------------------------
@@ -284,7 +516,7 @@ def evaluate(
     )
 
     # --------------------------------------------------------
-    # BASIC DATA CHECK
+    # DATA VALIDATION
     # --------------------------------------------------------
 
     if btc_open <= 0:
@@ -296,12 +528,15 @@ def evaluate(
             btc_current=btc_current,
             btc_movement_pct=movement,
             odds=0.0,
-            implied_probability=0.0,
-            market_probability=0.0,
+            model_probability=0.0,
+            forsee_probability=0.0,
+            break_even_probability=1.0,
             edge=0.0,
-            kelly_fraction=0.0,
+            gross_kelly=0.0,
+            quarter_kelly=0.0,
             position_size=0.0,
             seconds_remaining=seconds_remaining,
+            seconds_to_cutoff=seconds_to_cutoff,
             accepting_orders=accepting_orders,
             reason="Invalid BTC open price",
         )
@@ -319,12 +554,15 @@ def evaluate(
             btc_current=btc_current,
             btc_movement_pct=movement,
             odds=0.0,
-            implied_probability=0.0,
-            market_probability=0.0,
+            model_probability=0.0,
+            forsee_probability=0.0,
+            break_even_probability=1.0,
             edge=0.0,
-            kelly_fraction=0.0,
+            gross_kelly=0.0,
+            quarter_kelly=0.0,
             position_size=0.0,
             seconds_remaining=seconds_remaining,
+            seconds_to_cutoff=seconds_to_cutoff,
             accepting_orders=accepting_orders,
             reason=(
                 "Too late: "
@@ -333,13 +571,10 @@ def evaluate(
         )
 
     # --------------------------------------------------------
-    # ORDER STATUS
+    # CUTOFF CHECK
     # --------------------------------------------------------
 
-    if (
-        REQUIRE_ACCEPTING_ORDERS
-        and not accepting_orders
-    ):
+    if seconds_to_cutoff <= 0:
 
         return ForseeStrategyResult(
             signal=False,
@@ -348,12 +583,41 @@ def evaluate(
             btc_current=btc_current,
             btc_movement_pct=movement,
             odds=0.0,
-            implied_probability=0.0,
-            market_probability=0.0,
+            model_probability=0.0,
+            forsee_probability=0.0,
+            break_even_probability=1.0,
             edge=0.0,
-            kelly_fraction=0.0,
+            gross_kelly=0.0,
+            quarter_kelly=0.0,
             position_size=0.0,
             seconds_remaining=seconds_remaining,
+            seconds_to_cutoff=seconds_to_cutoff,
+            accepting_orders=accepting_orders,
+            reason="Forsee order cutoff has passed",
+        )
+
+    # --------------------------------------------------------
+    # ORDER STATUS
+    # --------------------------------------------------------
+
+    if not accepting_orders:
+
+        return ForseeStrategyResult(
+            signal=False,
+            side="NONE",
+            btc_open=btc_open,
+            btc_current=btc_current,
+            btc_movement_pct=movement,
+            odds=0.0,
+            model_probability=0.0,
+            forsee_probability=0.0,
+            break_even_probability=1.0,
+            edge=0.0,
+            gross_kelly=0.0,
+            quarter_kelly=0.0,
+            position_size=0.0,
+            seconds_remaining=seconds_remaining,
+            seconds_to_cutoff=seconds_to_cutoff,
             accepting_orders=accepting_orders,
             reason="Forsee is not accepting orders",
         )
@@ -371,12 +635,15 @@ def evaluate(
             btc_current=btc_current,
             btc_movement_pct=movement,
             odds=0.0,
-            implied_probability=0.0,
-            market_probability=0.0,
+            model_probability=0.0,
+            forsee_probability=0.0,
+            break_even_probability=1.0,
             edge=0.0,
-            kelly_fraction=0.0,
+            gross_kelly=0.0,
+            quarter_kelly=0.0,
             position_size=0.0,
             seconds_remaining=seconds_remaining,
+            seconds_to_cutoff=seconds_to_cutoff,
             accepting_orders=accepting_orders,
             reason=(
                 "BTC movement too small: "
@@ -385,27 +652,31 @@ def evaluate(
         )
 
     # --------------------------------------------------------
-    # DETERMINE DIRECTION
+    # DIRECTION
     # --------------------------------------------------------
 
     if movement > 0:
 
         side = "UP"
+
         odds = odds_up
-        market_probability = (
-            percent_up / 100.0
+
+        forsee_probability = (
+            forsee_probability_up
         )
 
     else:
 
         side = "DOWN"
+
         odds = odds_down
-        market_probability = (
-            percent_down / 100.0
+
+        forsee_probability = (
+            forsee_probability_down
         )
 
     # --------------------------------------------------------
-    # ODDS VALIDATION
+    # ODDS CHECK
     # --------------------------------------------------------
 
     if odds <= 1.0:
@@ -417,53 +688,54 @@ def evaluate(
             btc_current=btc_current,
             btc_movement_pct=movement,
             odds=odds,
-            implied_probability=0.0,
-            market_probability=market_probability,
+            model_probability=0.0,
+            forsee_probability=forsee_probability,
+            break_even_probability=1.0,
             edge=0.0,
-            kelly_fraction=0.0,
+            gross_kelly=0.0,
+            quarter_kelly=0.0,
             position_size=0.0,
             seconds_remaining=seconds_remaining,
+            seconds_to_cutoff=seconds_to_cutoff,
             accepting_orders=accepting_orders,
             reason=(
-                f"Invalid {side} odds: {odds}"
+                f"Invalid {side} odds: "
+                f"{odds}"
             ),
         )
 
     # --------------------------------------------------------
-    # IMPLIED PROBABILITY
+    # INDEPENDENT MODEL PROBABILITY
     # --------------------------------------------------------
 
-    implied_probability = (
-        calculate_implied_probability(
-            odds
+    if movement > 0:
+
+        model_probability = (
+            calculate_model_probability(
+                movement_pct=movement,
+                seconds_remaining=seconds_remaining,
+            )
         )
-    )
 
-    # --------------------------------------------------------
-    # PROBABILITY
-    # --------------------------------------------------------
-    #
-    # IMPORTANT:
-    #
-    # For the first paper implementation we use
-    # Forsee's own published probability as the
-    # market probability.
-    #
-    # This is NOT yet our independent BTC prediction.
-    #
-    # The next strategy version can replace this
-    # with an independently calculated probability.
-    #
+    else:
 
-    estimated_probability = (
-        market_probability
-    )
+        probability_up = (
+            calculate_model_probability(
+                movement_pct=movement,
+                seconds_remaining=seconds_remaining,
+            )
+        )
+
+        model_probability = (
+            1.0
+            - probability_up
+        )
 
     # --------------------------------------------------------
     # PROBABILITY CHECK
     # --------------------------------------------------------
 
-    if estimated_probability < MIN_PROBABILITY:
+    if model_probability < MIN_PROBABILITY:
 
         return ForseeStrategyResult(
             signal=False,
@@ -472,33 +744,43 @@ def evaluate(
             btc_current=btc_current,
             btc_movement_pct=movement,
             odds=odds,
-            implied_probability=implied_probability,
-            market_probability=market_probability,
+            model_probability=model_probability,
+            forsee_probability=forsee_probability,
+            break_even_probability=(
+                calculate_break_even_probability(
+                    odds
+                )
+            ),
             edge=0.0,
-            kelly_fraction=0.0,
+            gross_kelly=0.0,
+            quarter_kelly=0.0,
             position_size=0.0,
             seconds_remaining=seconds_remaining,
+            seconds_to_cutoff=seconds_to_cutoff,
             accepting_orders=accepting_orders,
             reason=(
-                f"{side} probability too low: "
-                f"{estimated_probability:.2%}"
+                f"{side} model probability too low: "
+                f"{model_probability:.2%}"
             ),
         )
 
     # --------------------------------------------------------
+    # BREAK-EVEN PROBABILITY
+    # --------------------------------------------------------
+
+    break_even_probability = (
+        calculate_break_even_probability(
+            odds
+        )
+    )
+
+    # --------------------------------------------------------
     # EDGE
     # --------------------------------------------------------
-    #
-    # Because we currently use Forsee's own probability,
-    # we do NOT invent an independent edge.
-    #
-    # We therefore compare published probability
-    # against implied probability from the odds.
-    #
 
-    edge = calculate_edge(
-        estimated_probability,
-        implied_probability,
+    edge = (
+        model_probability
+        - break_even_probability
     )
 
     # --------------------------------------------------------
@@ -514,12 +796,15 @@ def evaluate(
             btc_current=btc_current,
             btc_movement_pct=movement,
             odds=odds,
-            implied_probability=implied_probability,
-            market_probability=market_probability,
+            model_probability=model_probability,
+            forsee_probability=forsee_probability,
+            break_even_probability=break_even_probability,
             edge=edge,
-            kelly_fraction=0.0,
+            gross_kelly=0.0,
+            quarter_kelly=0.0,
             position_size=0.0,
             seconds_remaining=seconds_remaining,
+            seconds_to_cutoff=seconds_to_cutoff,
             accepting_orders=accepting_orders,
             reason=(
                 f"Edge too small: "
@@ -531,12 +816,12 @@ def evaluate(
     # KELLY
     # --------------------------------------------------------
 
-    kelly = calculate_kelly(
-        estimated_probability,
-        odds,
+    gross_kelly = calculate_kelly(
+        probability=model_probability,
+        odds=odds,
     )
 
-    if kelly <= 0:
+    if gross_kelly <= 0:
 
         return ForseeStrategyResult(
             signal=False,
@@ -545,23 +830,37 @@ def evaluate(
             btc_current=btc_current,
             btc_movement_pct=movement,
             odds=odds,
-            implied_probability=implied_probability,
-            market_probability=market_probability,
+            model_probability=model_probability,
+            forsee_probability=forsee_probability,
+            break_even_probability=break_even_probability,
             edge=edge,
-            kelly_fraction=kelly,
+            gross_kelly=gross_kelly,
+            quarter_kelly=0.0,
             position_size=0.0,
             seconds_remaining=seconds_remaining,
+            seconds_to_cutoff=seconds_to_cutoff,
             accepting_orders=accepting_orders,
             reason="Kelly fraction is zero",
         )
 
     # --------------------------------------------------------
+    # QUARTER KELLY
+    # --------------------------------------------------------
+
+    quarter_kelly = (
+        gross_kelly
+        * KELLY_FRACTION
+    )
+
+    # --------------------------------------------------------
     # POSITION SIZE
     # --------------------------------------------------------
 
-    position_size = calculate_position_size(
-        bankroll,
-        kelly,
+    position_size = (
+        calculate_position_size(
+            bankroll=bankroll,
+            kelly=gross_kelly,
+        )
     )
 
     if position_size <= 0:
@@ -573,15 +872,19 @@ def evaluate(
             btc_current=btc_current,
             btc_movement_pct=movement,
             odds=odds,
-            implied_probability=implied_probability,
-            market_probability=market_probability,
+            model_probability=model_probability,
+            forsee_probability=forsee_probability,
+            break_even_probability=break_even_probability,
             edge=edge,
-            kelly_fraction=kelly,
+            gross_kelly=gross_kelly,
+            quarter_kelly=quarter_kelly,
             position_size=0.0,
             seconds_remaining=seconds_remaining,
+            seconds_to_cutoff=seconds_to_cutoff,
             accepting_orders=accepting_orders,
             reason=(
-                f"Position below minimum ${MIN_POSITION_USD:.2f}"
+                "Position below minimum "
+                f"${MIN_POSITION_USD:.2f}"
             ),
         )
 
@@ -596,12 +899,15 @@ def evaluate(
         btc_current=btc_current,
         btc_movement_pct=movement,
         odds=odds,
-        implied_probability=estimated_probability,
-        market_probability=market_probability,
+        model_probability=model_probability,
+        forsee_probability=forsee_probability,
+        break_even_probability=break_even_probability,
         edge=edge,
-        kelly_fraction=kelly,
+        gross_kelly=gross_kelly,
+        quarter_kelly=quarter_kelly,
         position_size=position_size,
         seconds_remaining=seconds_remaining,
+        seconds_to_cutoff=seconds_to_cutoff,
         accepting_orders=accepting_orders,
         reason=(
             f"FORSEE PAPER SIGNAL: {side}"
@@ -627,6 +933,10 @@ def print_result(result):
     print("NO WALLET")
     print()
 
+    # --------------------------------------------------------
+    # BTC
+    # --------------------------------------------------------
+
     print("BTC")
     print("-" * 60)
 
@@ -645,6 +955,10 @@ def print_result(result):
         f"{result.btc_movement_pct:+.4f}%"
     )
 
+    # --------------------------------------------------------
+    # MARKET
+    # --------------------------------------------------------
+
     print()
     print("MARKET")
     print("-" * 60)
@@ -655,24 +969,33 @@ def print_result(result):
     )
 
     print(
-        f"Odds:                  "
+        f"Forsee Odds:           "
         f"{result.odds:.6f}"
     )
 
     print(
-        f"Implied Probability:   "
-        f"{result.implied_probability:.2%}"
+        f"Forsee Probability:    "
+        f"{result.forsee_probability:.2%}"
     )
 
     print(
-        f"Market Probability:    "
-        f"{result.market_probability:.2%}"
+        f"Model Probability:     "
+        f"{result.model_probability:.2%}"
     )
 
     print(
-        f"Edge:                  "
+        f"Break-even Probability:"
+        f" {result.break_even_probability:.2%}"
+    )
+
+    print(
+        f"Net Edge:              "
         f"{result.edge:.2%}"
     )
+
+    # --------------------------------------------------------
+    # RISK
+    # --------------------------------------------------------
 
     print()
     print("RISK")
@@ -680,21 +1003,25 @@ def print_result(result):
 
     print(
         f"Kelly:                 "
-        f"{result.kelly_fraction:.2%}"
+        f"{result.gross_kelly:.2%}"
     )
 
     print(
         f"Quarter Kelly:         "
-        f"{result.kelly_fraction * KELLY_FRACTION:.2%}"
+        f"{result.quarter_kelly:.2%}"
     )
 
     print(
-        f"Paper Position:       "
+        f"Paper Position:        "
         f"${result.position_size:.2f}"
     )
 
+    # --------------------------------------------------------
+    # TIMING
+    # --------------------------------------------------------
+
     print()
-    print("STATUS")
+    print("TIMING")
     print("-" * 60)
 
     print(
@@ -703,9 +1030,22 @@ def print_result(result):
     )
 
     print(
+        f"Seconds To Cutoff:     "
+        f"{result.seconds_to_cutoff:.1f}"
+    )
+
+    print(
         f"Accepting Orders:      "
         f"{result.accepting_orders}"
     )
+
+    # --------------------------------------------------------
+    # STATUS
+    # --------------------------------------------------------
+
+    print()
+    print("STATUS")
+    print("-" * 60)
 
     print(
         f"Signal:                "
@@ -721,9 +1061,13 @@ def print_result(result):
     print("=" * 60)
 
     if result.signal:
-        print("PAPER TRADE SIGNAL GENERATED")
+        print(
+            "PAPER TRADE SIGNAL GENERATED"
+        )
     else:
-        print("NO PAPER TRADE SIGNAL")
+        print(
+            "NO PAPER TRADE SIGNAL"
+        )
 
     print("=" * 60)
 
@@ -736,11 +1080,16 @@ def main():
 
     print()
     print("=" * 60)
-    print("FORSEE BTC 5-MINUTE PAPER STRATEGY TEST")
+    print(
+        "FORSEE BTC 5-MINUTE "
+        "PAPER STRATEGY TEST"
+    )
     print("=" * 60)
     print()
 
-    print("Loading Forsee market data...")
+    print(
+        "Loading Forsee market data..."
+    )
 
     market_data = get_market_data()
 
