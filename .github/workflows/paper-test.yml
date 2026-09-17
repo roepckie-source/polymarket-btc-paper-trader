@@ -1,301 +1,236 @@
-name: Polymarket BTC Paper Trader
+name: Paper Trading Test
 
 on:
   workflow_dispatch:
     inputs:
-      run_mode:
-        description: "Choose the paper trading run"
+      mode:
+        description: "Run mode"
         required: true
-        default: "fee-test"
+        default: "single"
         type: choice
         options:
           - single
           - fee-test
           - mexc-test
+          - forsee-test
           - 2hours
 
 jobs:
   paper-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 150
 
     steps:
-
-      # ==================================================
+      # ============================================================
       # CHECKOUT
-      # ==================================================
+      # ============================================================
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ==================================================
+      # ============================================================
       # PYTHON
-      # ==================================================
+      # ============================================================
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # ==================================================
+      # ============================================================
       # DEPENDENCIES
-      # ==================================================
+      # ============================================================
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests
 
-      # ==================================================
-      # STRATEGY TEST
-      # ==================================================
+      # ============================================================
+      # STRATEGY TESTS
+      # ============================================================
 
-      - name: Run strategy tests
+      - name: Test strategy
         run: |
           python strategy.py
 
-      # ==================================================
-      # PAPER TRADER TEST
-      # ==================================================
+      # ============================================================
+      # PAPER TRADER TESTS
+      # ============================================================
 
-      - name: Run paper trader tests
+      - name: Test paper trader
         run: |
           python test_paper.py
 
-      # ==================================================
-      # BTC MARKET DATA
-      # ==================================================
+      # ============================================================
+      # MARKET DATA TEST
+      # ============================================================
 
-      - name: Test market data
+      - name: Test BTC market data
         run: |
           python market_data.py
 
-      # ==================================================
-      # POLYMARKET DATA
-      # ==================================================
+      # ============================================================
+      # POLYMARKET DATA TEST
+      # ============================================================
 
-      - name: Test Polymarket data
+      - name: Test Polymarket market data
         run: |
           python polymarket_data.py
 
-      # ==================================================
-      # KRAKEN DATA
-      # ==================================================
+      # ============================================================
+      # KRAKEN DATA TEST
+      # ============================================================
 
-      - name: Test Kraken data
+      - name: Test Kraken BTC 5M data
         run: |
           python kraken_test.py
 
-      # ==================================================
-      # SELECTED RUN
-      # ==================================================
+      # ============================================================
+      # MEXC TEST
+      # ============================================================
 
-      - name: Run selected paper trading session
+      - name: Test MEXC BTC 5M
+        if: github.event.inputs.mode == 'mexc-test'
         run: |
+          python mexc_prediction_data.py
 
-          echo "=================================================="
-          echo "POLYMARKET BTC PAPER TRADER"
-          echo "=================================================="
+      # ============================================================
+      # FORSEE TEST - READ ONLY
+      # ============================================================
+
+      - name: Test Forsee BTC 5M
+        if: github.event.inputs.mode == 'forsee-test'
+        env:
+          FORSEE_API_KEY: ${{ secrets.FORSEE_API_KEY }}
+        run: |
+          echo "============================================================"
+          echo "FORSEE BTC 5M READ-ONLY TEST"
+          echo "============================================================"
           echo ""
-
+          echo "API KEY: PROVIDED THROUGH GITHUB SECRET"
+          echo "ORDERS: DISABLED"
+          echo "WALLET: NOT USED"
           echo "PAPER ONLY"
-          echo "NO API"
-          echo "NO REAL ORDERS"
-          echo "NO WALLET"
-          echo "NO REAL MONEY"
-
           echo ""
 
-          # ==================================================
-          # POLYMARKET FEE TEST
-          # ==================================================
+          python forsee_prediction_data.py
 
-          if [ "${{ github.event.inputs.run_mode }}" = "fee-test" ]; then
+      # ============================================================
+      # FEE TEST
+      # ============================================================
 
-            echo "RUN MODE: POLYMARKET FEE TEST"
-
-            echo "=================================================="
-            echo ""
-
-            python - <<'PY'
+      - name: Test Polymarket fee API
+        if: github.event.inputs.mode == 'fee-test'
+        run: |
+          python - <<'PY'
+          import os
+          import requests
 
           from polymarket_data import get_market_data
           from paper_live import get_fee_info
 
-          print("=" * 70)
-          print("POLYMARKET FEE TEST")
-          print("=" * 70)
-
-          data = get_market_data()
-
+          print("=" * 60)
+          print("POLYMARKET FEE API TEST")
+          print("=" * 60)
           print()
-          print("CURRENT MARKET")
-          print("-" * 70)
 
-          print(f"Market: {data.get('market_slug')}")
-          print(f"Condition ID: {data.get('condition_id')}")
-          print(
-              f"UP Price: "
-              f"{data.get('outcome_prices', {}).get('UP')}"
-          )
-          print(
-              f"DOWN Price: "
-              f"{data.get('outcome_prices', {}).get('DOWN')}"
-          )
+          market = get_market_data()
 
-          token_ids = data.get("token_ids", [])
+          condition_id = market.get("condition_id")
+          token_ids = market.get("token_ids") or []
 
+          print(f"Condition ID: {condition_id}")
+          print(f"Token IDs:    {token_ids}")
           print()
-          print("TOKEN IDS")
-          print("-" * 70)
 
-          for i, token in enumerate(token_ids):
-              print(f"{i}: {token}")
+          if not condition_id:
+              raise RuntimeError("No condition_id found")
 
           if not token_ids:
-              raise RuntimeError(
-                  "No CLOB token IDs found"
-              )
+              raise RuntimeError("No token IDs found")
 
-          # Test first available token.
-          token_id = str(token_ids[0])
+          token_id = token_ids[0]
 
-          fee = get_fee_info(
-              data.get("condition_id"),
-              token_id,
+          print(f"Using token ID: {token_id}")
+          print()
+
+          fee_info = get_fee_info(
+              condition_id=condition_id,
+              token_id=token_id,
           )
 
-          print()
           print("FEE INFORMATION")
-          print("-" * 70)
+          print("-" * 60)
 
-          print(f"Fee rate: {fee['rate']}")
-          print(
-              f"Fee rate %: "
-              f"{fee['rate'] * 100:.6f}%"
-          )
-          print(f"Fee BPS: {fee['bps']}")
-          print(f"Source: {fee['source']}")
+          if not fee_info:
+              raise RuntimeError("No fee information returned")
+
+          print(f"Fee rate:     {fee_info.get('fee_rate')}")
+          print(f"Fee rate %:   {fee_info.get('fee_rate_percent')}")
+          print(f"Fee BPS:      {fee_info.get('fee_bps')}")
+          print(f"Source:       {fee_info.get('source')}")
 
           print()
-          print("=" * 70)
-
-          if fee["source"] == "fallback 0":
-
-              print(
-                  "WARNING: No fee information "
-                  "was returned."
-              )
-
-              print(
-                  "DO NOT start the 2-hour test yet."
-              )
-
-          else:
-
-              print("FEE TEST SUCCESS")
-              print(
-                  "Polymarket fee information "
-                  "was retrieved."
-              )
-
-          print("=" * 70)
-
+          print("=" * 60)
+          print("FEE TEST COMPLETE")
+          print("=" * 60)
           PY
 
-          # ==================================================
-          # MEXC TEST
-          # ==================================================
+      # ============================================================
+      # SINGLE PAPER TEST
+      # ============================================================
 
-          elif [ "${{ github.event.inputs.run_mode }}" = "mexc-test" ]; then
+      - name: Single paper test
+        if: github.event.inputs.mode == 'single'
+        run: |
+          echo "============================================================"
+          echo "SINGLE PAPER TEST"
+          echo "============================================================"
+          echo ""
+          echo "PAPER ONLY"
+          echo "NO LIVE TRADING"
+          echo "NO REAL ORDERS"
+          echo ""
 
-            echo "RUN MODE: MEXC BTC 5M UP/DOWN TEST"
+          python paper_live.py
 
-            echo "=================================================="
+      # ============================================================
+      # 2 HOUR PAPER RUN
+      # ============================================================
+
+      - name: 2 hour paper run
+        if: github.event.inputs.mode == '2hours'
+        run: |
+          echo "============================================================"
+          echo "2 HOUR PAPER TRADING RUN"
+          echo "============================================================"
+          echo ""
+          echo "24 CHECKS"
+          echo "APPROXIMATELY 5 MINUTES BETWEEN CHECKS"
+          echo "PAPER ONLY"
+          echo "NO LIVE TRADING"
+          echo "NO REAL ORDERS"
+          echo ""
+
+          for i in $(seq 1 24)
+          do
             echo ""
-
-            echo "PAPER ONLY"
-            echo "NO MEXC API KEY"
-            echo "NO WALLET"
-            echo "NO ORDERS"
-            echo "NO REAL MONEY"
-
-            echo ""
-
-            python mexc_prediction_data.py
-
-            echo ""
-
-            echo "=================================================="
-            echo "MEXC DATA TEST COMPLETE"
-            echo "=================================================="
-
-            echo ""
-            echo "MEXC TEST WAS READ-ONLY."
-            echo "NO REAL TRADING WAS PERFORMED."
-
-          # ==================================================
-          # SINGLE TEST
-          # ==================================================
-
-          elif [ "${{ github.event.inputs.run_mode }}" = "single" ]; then
-
-            echo "RUN MODE: SINGLE TEST"
-
-            echo "=================================================="
+            echo "============================================================"
+            echo "PAPER RUN $i / 24"
+            echo "============================================================"
             echo ""
 
             python paper_live.py
 
-            echo ""
-
-            echo "=================================================="
-            echo "SINGLE PAPER TEST COMPLETE"
-            echo "=================================================="
-
-            echo ""
-            echo "PAPER ONLY - NO REAL TRADING"
-
-          # ==================================================
-          # 2 HOUR PAPER TEST
-          # ==================================================
-
-          else
-
-            echo "RUN MODE: 2 HOUR PAPER TRADING SESSION"
-
-            echo "24 x 5-minute checks"
-
-            echo "=================================================="
-            echo ""
-
-            for i in {1..24}; do
-
+            if [ "$i" -lt 24 ]; then
               echo ""
-              echo "=================================================="
-              echo "PAPER TRADING CHECK $i / 24"
-              echo "=================================================="
-              echo ""
+              echo "Waiting 300 seconds until next check..."
+              sleep 300
+            fi
+          done
 
-              python paper_live.py
-
-              if [ "$i" -lt 24 ]; then
-
-                echo ""
-                echo "Waiting 5 minutes until next 5-minute window..."
-                echo ""
-
-                sleep 300
-
-              fi
-
-            done
-
-            echo ""
-            echo "=================================================="
-            echo "2 HOUR PAPER TRADING SESSION COMPLETE"
-            echo "=================================================="
-
-            echo ""
-            echo "PAPER ONLY - NO REAL TRADING"
-
-          fi
+          echo ""
+          echo "============================================================"
+          echo "2 HOUR PAPER RUN COMPLETE"
+          echo "============================================================"
