@@ -2,6 +2,15 @@ name: Polymarket BTC Paper Trader
 
 on:
   workflow_dispatch:
+    inputs:
+      run_mode:
+        description: "Choose the paper trading run"
+        required: true
+        default: "single"
+        type: choice
+        options:
+          - single
+          - 2hours
 
 jobs:
   paper-test:
@@ -41,11 +50,11 @@ jobs:
         run: |
           python kraken_test.py
 
-      - name: Run 2 hour paper trading session
+      - name: Run selected paper trading session
         run: |
+
           echo "=================================================="
           echo "POLYMARKET BTC PAPER TRADER"
-          echo "2 HOUR PAPER TRADING SESSION"
           echo "=================================================="
           echo ""
           echo "PAPER ONLY"
@@ -54,31 +63,54 @@ jobs:
           echo "NO WALLET"
           echo "NO REAL MONEY"
           echo ""
-          echo "24 x 5-minute checks"
-          echo "=================================================="
-          echo ""
 
-          for i in {1..24}; do
-            echo ""
-            echo "=================================================="
-            echo "PAPER TRADING CHECK $i / 24"
+          if [ "${{ github.event.inputs.run_mode }}" = "single" ]; then
+
+            echo "RUN MODE: SINGLE TEST"
+            echo "ONE PAPER TRADING CHECK"
             echo "=================================================="
             echo ""
 
             python paper_live.py
 
-            if [ "$i" -lt 24 ]; then
-              echo ""
-              echo "Waiting 5 minutes until next 5-minute window..."
-              echo ""
-              sleep 300
-            fi
-          done
+            echo ""
+            echo "=================================================="
+            echo "SINGLE PAPER TEST COMPLETE"
+            echo "=================================================="
+            echo ""
+            echo "PAPER ONLY - NO REAL TRADING"
 
-          echo ""
-          echo "=================================================="
-          echo "2 HOUR PAPER TRADING SESSION COMPLETE"
-          echo "=================================================="
-          echo ""
-          echo "PAPER ONLY - NO REAL TRADING"
-          echo ""
+          else
+
+            echo "RUN MODE: 2 HOUR PAPER TRADING SESSION"
+            echo "24 x 5-minute checks"
+            echo "=================================================="
+            echo ""
+
+            for i in {1..24}; do
+
+              echo ""
+              echo "=================================================="
+              echo "PAPER TRADING CHECK $i / 24"
+              echo "=================================================="
+              echo ""
+
+              python paper_live.py
+
+              if [ "$i" -lt 24 ]; then
+                echo ""
+                echo "Waiting 5 minutes until next 5-minute window..."
+                echo ""
+                sleep 300
+              fi
+
+            done
+
+            echo ""
+            echo "=================================================="
+            echo "2 HOUR PAPER TRADING SESSION COMPLETE"
+            echo "=================================================="
+            echo ""
+            echo "PAPER ONLY - NO REAL TRADING"
+
+          fi
