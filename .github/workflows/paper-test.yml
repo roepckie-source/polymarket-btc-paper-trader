@@ -13,6 +13,7 @@ on:
           - fee-test
           - mexc-test
           - forsee-test
+          - forsee-strategy-test
           - 2hours
 
 jobs:
@@ -105,7 +106,7 @@ jobs:
           python mexc_prediction_data.py
 
       # ============================================================
-      # FORSEE TEST
+      # FORSEE READ-ONLY TEST
       # ============================================================
 
       - name: Test Forsee BTC 5M
@@ -124,6 +125,27 @@ jobs:
           echo ""
 
           python forsee_prediction_data.py
+
+      # ============================================================
+      # FORSEE STRATEGY TEST
+      # ============================================================
+
+      - name: Test Forsee strategy
+        if: github.event.inputs.mode == 'forsee-strategy-test'
+        env:
+          FORSEE_API_KEY: ${{ secrets.FORSEE_API_KEY }}
+        run: |
+          echo "============================================================"
+          echo "FORSEE BTC 5M STRATEGY TEST"
+          echo "============================================================"
+          echo ""
+          echo "PAPER ONLY"
+          echo "NO ORDERS"
+          echo "NO BETS"
+          echo "NO WALLET"
+          echo ""
+
+          python forsee_strategy.py
 
       # ============================================================
       # POLYMARKET FEE TEST
