@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 150
 
     steps:
+
       # ============================================================
       # CHECKOUT
       # ============================================================
@@ -47,7 +48,7 @@ jobs:
           pip install requests
 
       # ============================================================
-      # STRATEGY TESTS
+      # STRATEGY TEST
       # ============================================================
 
       - name: Test strategy
@@ -55,7 +56,7 @@ jobs:
           python strategy.py
 
       # ============================================================
-      # PAPER TRADER TESTS
+      # PAPER TRADER TEST
       # ============================================================
 
       - name: Test paper trader
@@ -63,7 +64,7 @@ jobs:
           python test_paper.py
 
       # ============================================================
-      # MARKET DATA TEST
+      # BTC MARKET DATA
       # ============================================================
 
       - name: Test BTC market data
@@ -71,7 +72,7 @@ jobs:
           python market_data.py
 
       # ============================================================
-      # POLYMARKET DATA TEST
+      # POLYMARKET DATA
       # ============================================================
 
       - name: Test Polymarket market data
@@ -79,7 +80,7 @@ jobs:
           python polymarket_data.py
 
       # ============================================================
-      # KRAKEN DATA TEST
+      # KRAKEN DATA
       # ============================================================
 
       - name: Test Kraken BTC 5M data
@@ -93,10 +94,18 @@ jobs:
       - name: Test MEXC BTC 5M
         if: github.event.inputs.mode == 'mexc-test'
         run: |
+          echo "============================================================"
+          echo "MEXC BTC 5M TEST"
+          echo "============================================================"
+          echo ""
+          echo "READ ONLY"
+          echo "NO ORDERS"
+          echo ""
+
           python mexc_prediction_data.py
 
       # ============================================================
-      # FORSEE TEST - READ ONLY
+      # FORSEE TEST
       # ============================================================
 
       - name: Test Forsee BTC 5M
@@ -117,15 +126,14 @@ jobs:
           python forsee_prediction_data.py
 
       # ============================================================
-      # FEE TEST
+      # POLYMARKET FEE TEST
       # ============================================================
 
       - name: Test Polymarket fee API
         if: github.event.inputs.mode == 'fee-test'
         run: |
+
           python - <<'PY'
-          import os
-          import requests
 
           from polymarket_data import get_market_data
           from paper_live import get_fee_info
@@ -140,19 +148,32 @@ jobs:
           condition_id = market.get("condition_id")
           token_ids = market.get("token_ids") or []
 
-          print(f"Condition ID: {condition_id}")
-          print(f"Token IDs:    {token_ids}")
+          print(
+              f"Condition ID: {condition_id}"
+          )
+
+          print(
+              f"Token IDs:    {token_ids}"
+          )
+
           print()
 
           if not condition_id:
-              raise RuntimeError("No condition_id found")
+              raise RuntimeError(
+                  "No condition_id found"
+              )
 
           if not token_ids:
-              raise RuntimeError("No token IDs found")
+              raise RuntimeError(
+                  "No token IDs found"
+              )
 
           token_id = token_ids[0]
 
-          print(f"Using token ID: {token_id}")
+          print(
+              f"Using token ID: {token_id}"
+          )
+
           print()
 
           fee_info = get_fee_info(
@@ -160,21 +181,40 @@ jobs:
               token_id=token_id,
           )
 
+          if not fee_info:
+              raise RuntimeError(
+                  "No fee information returned"
+              )
+
           print("FEE INFORMATION")
           print("-" * 60)
 
-          if not fee_info:
-              raise RuntimeError("No fee information returned")
+          print(
+              f"Fee rate:     "
+              f"{fee_info.get('fee_rate')}"
+          )
 
-          print(f"Fee rate:     {fee_info.get('fee_rate')}")
-          print(f"Fee rate %:   {fee_info.get('fee_rate_percent')}")
-          print(f"Fee BPS:      {fee_info.get('fee_bps')}")
-          print(f"Source:       {fee_info.get('source')}")
+          print(
+              f"Fee rate %:   "
+              f"{fee_info.get('fee_rate_percent')}"
+          )
+
+          print(
+              f"Fee BPS:      "
+              f"{fee_info.get('fee_bps')}"
+          )
+
+          print(
+              f"Source:       "
+              f"{fee_info.get('source')}"
+          )
 
           print()
+
           print("=" * 60)
           print("FEE TEST COMPLETE")
           print("=" * 60)
+
           PY
 
       # ============================================================
@@ -184,6 +224,7 @@ jobs:
       - name: Single paper test
         if: github.event.inputs.mode == 'single'
         run: |
+
           echo "============================================================"
           echo "SINGLE PAPER TEST"
           echo "============================================================"
@@ -202,6 +243,7 @@ jobs:
       - name: 2 hour paper run
         if: github.event.inputs.mode == '2hours'
         run: |
+
           echo "============================================================"
           echo "2 HOUR PAPER TRADING RUN"
           echo "============================================================"
@@ -215,6 +257,7 @@ jobs:
 
           for i in $(seq 1 24)
           do
+
             echo ""
             echo "============================================================"
             echo "PAPER RUN $i / 24"
@@ -224,10 +267,14 @@ jobs:
             python paper_live.py
 
             if [ "$i" -lt 24 ]; then
+
               echo ""
               echo "Waiting 300 seconds until next check..."
+
               sleep 300
+
             fi
+
           done
 
           echo ""
