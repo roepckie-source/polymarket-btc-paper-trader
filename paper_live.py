@@ -15,6 +15,9 @@ from polymarket_data import get_market_data as get_polymarket_market_data
 
 PAPER_BANKROLL = 100.00
 
+# HARD SAFETY: this file is paper-only.
+LIVE_TRADING = False
+
 TRADES_FILE = "paper_trades.csv"
 STATE_FILE = "paper_state.csv"
 
@@ -144,8 +147,8 @@ TRADE_FIELDS = [
     "market_slug",
     "condition_id",
 
-    # IMPORTANT:
-    # Needed for BTC fallback resolution.
+    # Kept for audit/debugging of the BTC 5-minute window.
+    # It is NOT used for trade settlement.
     "window_start",
 ]
 
@@ -333,20 +336,25 @@ def get_polymarket_market_by_slug(slug):
 
 
 # ============================================================
-# RESOLUTION CHECK
+# OFFICIAL POLYMARKET RESOLUTION
 # ============================================================
 
-def get_resolved_side(market_slug, expected_side):
+def get_resolved_side(market_slug):
     """
-    Try to determine the actual resolved Polymarket outcome.
+    Determine the official Polymarket outcome.
+
+    IMPORTANT:
+    A market is only considered resolved when Polymarket marks
+    the market/event as closed AND one outcome is settled at
+    >= 0.999.
+
+    We deliberately do NOT use BTC candle data as a substitute
+    for Polymarket settlement.
 
     Returns:
         UP
         DOWN
         None
-
-    None means that the market is not yet conclusively
-    resolved from public market data.
     """
 
     event = get_polymarket_market_by_slug(market_slug)
@@ -354,12 +362,25 @@ def get_resolved_side(market_slug, expected_side):
     if not event:
         return None
 
+    event_closed = bool(event.get("closed", False))
+
     markets = event.get("markets", [])
 
     if not markets:
         return None
 
     for market in markets:
+
+        market_slug_value = market.get("slug", "")
+
+        # Prefer exact market if the event contains multiple markets.
+        if market_slug_value and market_slug_value != market_slug:
+            continue
+
+        market_closed = bool(market.get("closed", False))
+
+        if not (event_closed or market_closed):
+            continue
 
         outcomes = market.get("outcomes")
         prices = market.get("outcomePrices")
@@ -384,7 +405,7 @@ def get_resolved_side(market_slug, expected_side):
 
         try:
             normalized = [
-                str(x).strip().lower()
+                str(x).strip().upper()
                 for x in outcomes
             ]
 
@@ -393,25 +414,16 @@ def get_resolved_side(market_slug, expected_side):
                 for x in prices
             ]
 
-            # ------------------------------------------------
-            # RESOLVED UP
-            # ------------------------------------------------
-
             for i, outcome in enumerate(normalized):
 
-                if outcome in ("up", "yes"):
+                if i >= len(numeric_prices):
+                    continue
 
+                if outcome in ("UP", "YES"):
                     if numeric_prices[i] >= 0.999:
                         return "UP"
 
-            # ------------------------------------------------
-            # RESOLVED DOWN
-            # ------------------------------------------------
-
-            for i, outcome in enumerate(normalized):
-
-                if outcome in ("down", "no"):
-
+                if outcome in ("DOWN", "NO"):
                     if numeric_prices[i] >= 0.999:
                         return "DOWN"
 
@@ -419,63 +431,6 @@ def get_resolved_side(market_slug, expected_side):
             continue
 
     return None
-
-
-# ============================================================
-# FALLBACK BTC RESOLUTION
-# ============================================================
-
-def fallback_btc_resolution(open_trade):
-    """
-    FALLBACK ONLY.
-
-    If Polymarket's public market resolution is not yet
-    available, use the next 5-minute BTC open as the
-    provisional reference.
-
-    This is NOT the official Polymarket resolution.
-    """
-
-    try:
-
-        btc_data = get_btc_market_data()
-
-        current_window_start = int(
-            btc_data["window_start"]
-        )
-
-        trade_window_start = int(
-            open_trade["window_start"]
-        )
-
-        # The next 5-minute candle must have started.
-        if current_window_start <= trade_window_start:
-            return None
-
-        # Next candle open = provisional BTC close.
-        btc_close = float(
-            btc_data["btc_open"]
-        )
-
-        btc_open = float(
-            open_trade["btc_open"]
-        )
-
-        if btc_close > btc_open:
-            return "UP"
-
-        if btc_close < btc_open:
-            return "DOWN"
-
-        return None
-
-    except Exception as e:
-
-        print(
-            f"WARNING: BTC fallback resolution failed: {e}"
-        )
-
-        return None
 
 
 # ============================================================
@@ -495,38 +450,12 @@ def resolve_open_trade(open_trade, bankroll):
     print(f"Market:   {market_slug}")
 
     # --------------------------------------------------------
-    # FIRST: OFFICIAL POLYMARKET PUBLIC RESOLUTION
+    # OFFICIAL POLYMARKET PUBLIC RESOLUTION ONLY
     # --------------------------------------------------------
 
-    winning_side = get_resolved_side(
-        market_slug,
-        side,
-    )
+    winning_side = get_resolved_side(market_slug)
 
-    resolution_source = "Polymarket public resolution"
-
-    # --------------------------------------------------------
-    # FALLBACK
-    # --------------------------------------------------------
-
-    if winning_side is None:
-
-        print()
-        print(
-            "Polymarket resolution not yet available."
-        )
-
-        print(
-            "Using BTC 5m fallback resolution temporarily."
-        )
-
-        winning_side = fallback_btc_resolution(
-            open_trade
-        )
-
-        resolution_source = (
-            "BTC 5m fallback - NOT official Polymarket resolution"
-        )
+    resolution_source = "Polymarket official public resolution"
 
     # --------------------------------------------------------
     # STILL OPEN
@@ -535,10 +464,16 @@ def resolve_open_trade(open_trade, bankroll):
     if winning_side is None:
 
         print()
-        print("TRADE REMAINS OPEN")
+        print(
+            "Polymarket official resolution not yet available."
+        )
 
         print(
-            "No conclusive resolution available yet."
+            "TRADE REMAINS OPEN"
+        )
+
+        print(
+            "No BTC fallback is used."
         )
 
         return bankroll
@@ -588,6 +523,8 @@ def resolve_open_trade(open_trade, bankroll):
 
     # --------------------------------------------------------
     # BTC INFORMATION
+    # Diagnostic only.
+    # NOT used to determine WIN/LOSS.
     # --------------------------------------------------------
 
     btc_close = ""
@@ -686,7 +623,7 @@ def resolve_open_trade(open_trade, bankroll):
 
     print()
     print("=" * 70)
-    print("PAPER TRADE RESOLVED")
+    print("PAPER TRADE RESOLVED - OFFICIAL POLYMARKET RESULT")
     print("=" * 70)
 
     print(f"Trade ID:          {trade_id}")
@@ -983,8 +920,6 @@ def open_paper_trade(
 
         "condition_id": condition_id,
 
-        # IMPORTANT:
-        # This was missing from TRADE_FIELDS before.
         "window_start": btc_data.get(
             "window_start",
             "",
@@ -1000,6 +935,11 @@ def open_paper_trade(
 
 def main():
 
+    if LIVE_TRADING:
+        raise RuntimeError(
+            "LIVE_TRADING must remain False in paper_live.py"
+        )
+
     print()
     print("=" * 70)
     print("POLYMARKET BTC 5-MIN PAPER TRADER")
@@ -1012,6 +952,7 @@ def main():
     print("NO PRIVATE KEYS")
     print("NO REAL ORDERS")
     print("NO REAL MONEY")
+    print("OFFICIAL POLYMARKET RESOLUTION ONLY")
 
     bankroll = load_bankroll()
 
