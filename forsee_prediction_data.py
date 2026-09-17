@@ -21,17 +21,26 @@ from datetime import datetime, timezone
 import requests
 
 
+# ============================================================
+# CONFIG
+# ============================================================
+
 FORSEE_API_BASE = "https://api.forsee.market/v1"
+
 MARKET_ID = "BTC_FIVE_MINUTES"
 
 REQUEST_TIMEOUT = 15
 
 
+# ============================================================
+# API KEY
+# ============================================================
+
 def get_api_key():
     """
-    Read the Forsee API key from the environment.
+    Read Forsee API key from environment.
 
-    Expected environment variable:
+    Expected:
         FORSEE_API_KEY
     """
 
@@ -40,18 +49,48 @@ def get_api_key():
     if not api_key:
         raise RuntimeError(
             "FORSEE_API_KEY is not set. "
-            "Add it as a GitHub Actions secret or environment variable."
+            "Add it as a GitHub Actions secret."
         )
 
     return api_key.strip()
 
 
+# ============================================================
+# HELPERS
+# ============================================================
+
+def milliseconds_to_seconds(value):
+    """
+    Convert Forsee millisecond values to seconds.
+
+    Example:
+        138229 -> 138.229
+
+    Returns None if the value is missing or invalid.
+    """
+
+    if value is None:
+        return None
+
+    try:
+        return float(value) / 1000.0
+    except (TypeError, ValueError):
+        return None
+
+
+# ============================================================
+# GET MARKET DATA
+# ============================================================
+
 def get_market_data():
     """
-    Read the current Forsee BTC 5-minute market.
+    Read current Forsee BTC 5-minute market.
 
     READ ONLY.
-    No order endpoint is used.
+
+    No POST requests.
+    No orders.
+    No wallet.
     """
 
     api_key = get_api_key()
@@ -80,7 +119,7 @@ def get_market_data():
 
     if not payload.get("success"):
         raise RuntimeError(
-            f"Forsee API returned success=false: "
+            "Forsee API returned success=false: "
             f"{payload.get('error', 'unknown error')}"
         )
 
@@ -88,8 +127,13 @@ def get_market_data():
 
     if not isinstance(data, dict):
         raise RuntimeError(
-            f"Unexpected Forsee API data format: {type(data).__name__}"
+            "Unexpected Forsee API data format: "
+            f"{type(data).__name__}"
         )
+
+    # --------------------------------------------------------
+    # CURRENT ROUND
+    # --------------------------------------------------------
 
     current_round = data.get("currentRound")
 
@@ -98,13 +142,44 @@ def get_market_data():
             "Forsee response does not contain currentRound."
         )
 
+    # --------------------------------------------------------
+    # RAW TIME VALUES
+    # --------------------------------------------------------
+
+    raw_time_remaining = current_round.get("timeRemaining")
+    raw_time_to_lock = current_round.get("timeToLock")
+    raw_time_to_cutoff = current_round.get(
+        "timeToOrderCutoff"
+    )
+
+    # --------------------------------------------------------
+    # CONVERT MILLISECONDS -> SECONDS
+    # --------------------------------------------------------
+
+    time_remaining_seconds = milliseconds_to_seconds(
+        raw_time_remaining
+    )
+
+    time_to_lock_seconds = milliseconds_to_seconds(
+        raw_time_to_lock
+    )
+
+    time_to_cutoff_seconds = milliseconds_to_seconds(
+        raw_time_to_cutoff
+    )
+
+    # --------------------------------------------------------
+    # RESULT
+    # --------------------------------------------------------
+
     result = {
+
         # Market
         "market_id": data.get("id"),
         "crypto": data.get("crypto"),
         "timeframe": data.get("timeFrame"),
 
-        # Live odds
+        # Odds
         "odds_up": data.get("oddsUp"),
         "odds_down": data.get("oddsDown"),
         "percent_up": data.get("percentUp"),
@@ -120,32 +195,52 @@ def get_market_data():
         "min_bet": data.get("minBet"),
         "max_bet": data.get("maxBet"),
 
-        # Current round
+        # Round
         "round_id": current_round.get("id"),
         "round_number": current_round.get("roundNumber"),
-        "round_start": current_round.get("startTime"),
-        "round_lock": current_round.get("lockTime"),
-        "round_end": current_round.get("endTime"),
 
-        # Timing
-        "time_remaining": current_round.get("timeRemaining"),
-        "time_to_lock": current_round.get("timeToLock"),
-        "order_cutoff_time": current_round.get("orderCutoffTime"),
-        "time_to_order_cutoff": current_round.get(
-            "timeToOrderCutoff"
+        "round_start": current_round.get(
+            "startTime"
         ),
 
+        "round_lock": current_round.get(
+            "lockTime"
+        ),
+
+        "round_end": current_round.get(
+            "endTime"
+        ),
+
+        # Raw timing values
+        "time_remaining_raw": raw_time_remaining,
+        "time_to_lock_raw": raw_time_to_lock,
+        "time_to_order_cutoff_raw": raw_time_to_cutoff,
+
+        # Timing in seconds
+        "time_remaining": time_remaining_seconds,
+        "time_to_lock": time_to_lock_seconds,
+        "time_to_order_cutoff": time_to_cutoff_seconds,
+
         # Order status
-        "accepting_orders": current_round.get("acceptingOrders"),
+        "accepting_orders": current_round.get(
+            "acceptingOrders"
+        ),
 
-        # BTC prices
-        "btc_open": current_round.get("openPrice"),
-        "btc_current": current_round.get("currentPrice"),
+        # BTC
+        "btc_open": current_round.get(
+            "openPrice"
+        ),
 
-        # Round status
-        "status": current_round.get("status"),
+        "btc_current": current_round.get(
+            "currentPrice"
+        ),
 
-        # Timestamp of our read
+        # Status
+        "status": current_round.get(
+            "status"
+        ),
+
+        # Timestamp
         "read_timestamp": datetime.now(
             timezone.utc
         ).isoformat(),
@@ -154,10 +249,11 @@ def get_market_data():
     return result
 
 
+# ============================================================
+# PRINT DATA
+# ============================================================
+
 def print_market_data(data):
-    """
-    Print a clean human-readable report.
-    """
 
     print()
     print("=" * 60)
@@ -171,78 +267,254 @@ def print_market_data(data):
     print("NO WALLET")
     print()
 
+    # --------------------------------------------------------
+    # MARKET
+    # --------------------------------------------------------
+
     print(f"Market ID:             {data['market_id']}")
     print(f"Crypto:                {data['crypto']}")
     print(f"Timeframe:             {data['timeframe']}")
 
+    # --------------------------------------------------------
+    # ROUND
+    # --------------------------------------------------------
+
     print()
     print("ROUND")
     print("-" * 60)
-    print(f"Round ID:              {data['round_id']}")
-    print(f"Round Number:          {data['round_number']}")
-    print(f"Start:                 {data['round_start']}")
-    print(f"Lock:                  {data['round_lock']}")
-    print(f"End:                   {data['round_end']}")
+
+    print(
+        f"Round ID:              "
+        f"{data['round_id']}"
+    )
+
+    print(
+        f"Round Number:          "
+        f"{data['round_number']}"
+    )
+
+    print(
+        f"Start:                 "
+        f"{data['round_start']}"
+    )
+
+    print(
+        f"Lock:                  "
+        f"{data['round_lock']}"
+    )
+
+    print(
+        f"End:                   "
+        f"{data['round_end']}"
+    )
+
+    # --------------------------------------------------------
+    # BTC
+    # --------------------------------------------------------
 
     print()
     print("BTC")
     print("-" * 60)
-    print(f"BTC Open:              {data['btc_open']}")
-    print(f"BTC Current:           {data['btc_current']}")
+
+    print(
+        f"BTC Open:              "
+        f"{data['btc_open']}"
+    )
+
+    print(
+        f"BTC Current:           "
+        f"{data['btc_current']}"
+    )
+
+    btc_open = data["btc_open"]
+    btc_current = data["btc_current"]
 
     if (
-        data["btc_open"] is not None
-        and data["btc_current"] is not None
-        and data["btc_open"] != 0
+        btc_open is not None
+        and btc_current is not None
+        and float(btc_open) != 0
     ):
+
         movement = (
-            (data["btc_current"] - data["btc_open"])
-            / data["btc_open"]
+            (
+                float(btc_current)
+                - float(btc_open)
+            )
+            / float(btc_open)
             * 100
         )
 
-        direction = "UP" if movement > 0 else "DOWN"
+        direction = (
+            "UP"
+            if movement > 0
+            else "DOWN"
+            if movement < 0
+            else "FLAT"
+        )
 
-        print(f"BTC Movement:          {movement:+.4f}%")
-        print(f"BTC Direction:         {direction}")
+        print(
+            f"BTC Movement:          "
+            f"{movement:+.4f}%"
+        )
+
+        print(
+            f"BTC Direction:         "
+            f"{direction}"
+        )
+
+    # --------------------------------------------------------
+    # FORSEE ODDS
+    # --------------------------------------------------------
 
     print()
     print("FORSEE ODDS")
     print("-" * 60)
-    print(f"UP Odds:               {data['odds_up']}")
-    print(f"DOWN Odds:             {data['odds_down']}")
-    print(f"UP Probability:        {data['percent_up']}%")
-    print(f"DOWN Probability:      {data['percent_down']}%")
-    print(f"Odds Source:           {data['odds_source']}")
+
+    print(
+        f"UP Odds:               "
+        f"{data['odds_up']}"
+    )
+
+    print(
+        f"DOWN Odds:             "
+        f"{data['odds_down']}"
+    )
+
+    print(
+        f"UP Probability:        "
+        f"{data['percent_up']}%"
+    )
+
+    print(
+        f"DOWN Probability:      "
+        f"{data['percent_down']}%"
+    )
+
+    print(
+        f"Odds Source:           "
+        f"{data['odds_source']}"
+    )
+
+    # --------------------------------------------------------
+    # TIMING
+    # --------------------------------------------------------
 
     print()
     print("TIMING")
     print("-" * 60)
-    print(f"Seconds Remaining:     {data['time_remaining']}")
-    print(f"Seconds To Lock:       {data['time_to_lock']}")
-    print(
-        f"Seconds To Cutoff:     "
-        f"{data['time_to_order_cutoff']}"
-    )
+
+    time_remaining = data["time_remaining"]
+    time_to_lock = data["time_to_lock"]
+    time_to_cutoff = data[
+        "time_to_order_cutoff"
+    ]
+
+    if time_remaining is not None:
+        print(
+            f"Seconds Remaining:     "
+            f"{time_remaining:.1f}"
+        )
+    else:
+        print(
+            "Seconds Remaining:     None"
+        )
+
+    if time_to_lock is not None:
+        print(
+            f"Seconds To Lock:       "
+            f"{time_to_lock:.1f}"
+        )
+    else:
+        print(
+            "Seconds To Lock:       None"
+        )
+
+    if time_to_cutoff is not None:
+        print(
+            f"Seconds To Cutoff:     "
+            f"{time_to_cutoff:.1f}"
+        )
+    else:
+        print(
+            "Seconds To Cutoff:     None"
+        )
+
+    # --------------------------------------------------------
+    # ORDER STATUS
+    # --------------------------------------------------------
 
     print()
     print("ORDER STATUS")
     print("-" * 60)
-    print(f"Accepting Orders:      {data['accepting_orders']}")
+
+    print(
+        f"Accepting Orders:      "
+        f"{data['accepting_orders']}"
+    )
+
+    # --------------------------------------------------------
+    # MARKET STATUS
+    # --------------------------------------------------------
 
     print()
     print("MARKET STATUS")
     print("-" * 60)
-    print(f"Status:                {data['status']}")
+
+    print(
+        f"Status:                "
+        f"{data['status']}"
+    )
+
+    # --------------------------------------------------------
+    # LIMITS
+    # --------------------------------------------------------
 
     print()
     print("LIMITS")
     print("-" * 60)
-    print(f"Minimum Bet:           ${data['min_bet']}")
-    print(f"Maximum Bet:           ${data['max_bet']}")
+
+    print(
+        f"Minimum Bet:           "
+        f"${data['min_bet']}"
+    )
+
+    print(
+        f"Maximum Bet:           "
+        f"${data['max_bet']}"
+    )
+
+    # --------------------------------------------------------
+    # RAW VALUES
+    # --------------------------------------------------------
 
     print()
-    print(f"Read UTC:              {data['read_timestamp']}")
+    print("RAW API TIMING")
+    print("-" * 60)
+
+    print(
+        f"timeRemaining:         "
+        f"{data['time_remaining_raw']}"
+    )
+
+    print(
+        f"timeToLock:             "
+        f"{data['time_to_lock_raw']}"
+    )
+
+    print(
+        f"timeToOrderCutoff:      "
+        f"{data['time_to_order_cutoff_raw']}"
+    )
+
+    # --------------------------------------------------------
+    # READ TIMESTAMP
+    # --------------------------------------------------------
+
+    print()
+    print(
+        f"Read UTC:              "
+        f"{data['read_timestamp']}"
+    )
 
     print()
     print("=" * 60)
@@ -250,18 +522,28 @@ def print_market_data(data):
     print("=" * 60)
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 def main():
+
     try:
+
         data = get_market_data()
+
         print_market_data(data)
 
     except Exception as exc:
+
         print()
         print("=" * 60)
         print("FORSEE TEST FAILED")
         print("=" * 60)
         print()
+
         print(str(exc))
+
         print()
 
         sys.exit(1)
