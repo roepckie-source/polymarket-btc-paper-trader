@@ -6,10 +6,11 @@ on:
       run_mode:
         description: "Choose the paper trading run"
         required: true
-        default: "single"
+        default: "fee-test"
         type: choice
         options:
           - single
+          - fee-test
           - 2hours
 
 jobs:
@@ -64,10 +65,74 @@ jobs:
           echo "NO REAL MONEY"
           echo ""
 
-          if [ "${{ github.event.inputs.run_mode }}" = "single" ]; then
+          if [ "${{ github.event.inputs.run_mode }}" = "fee-test" ]; then
+
+            echo "RUN MODE: POLYMARKET FEE TEST"
+            echo "=================================================="
+            echo ""
+
+            python - <<'PY'
+          from polymarket_data import get_market_data
+          from paper_live import get_fee_info
+
+          print("=" * 70)
+          print("POLYMARKET FEE TEST")
+          print("=" * 70)
+
+          data = get_market_data()
+
+          print()
+          print("CURRENT MARKET")
+          print("-" * 70)
+          print(f"Market:       {data.get('market_slug')}")
+          print(f"Condition ID: {data.get('condition_id')}")
+          print(f"UP Price:     {data.get('outcome_prices', {}).get('UP')}")
+          print(f"DOWN Price:   {data.get('outcome_prices', {}).get('DOWN')}")
+
+          token_ids = data.get("token_ids", [])
+
+          print()
+          print("TOKEN IDS")
+          print("-" * 70)
+
+          for i, token in enumerate(token_ids):
+              print(f"{i}: {token}")
+
+          if not token_ids:
+              raise RuntimeError("No CLOB token IDs found")
+
+          # Test the first available token.
+          token_id = str(token_ids[0])
+
+          fee = get_fee_info(
+              data.get("condition_id"),
+              token_id,
+          )
+
+          print()
+          print("FEE INFORMATION")
+          print("-" * 70)
+          print(f"Fee rate:     {fee['rate']}")
+          print(f"Fee rate %:   {fee['rate'] * 100:.6f}%")
+          print(f"Fee BPS:      {fee['bps']}")
+          print(f"Source:       {fee['source']}")
+
+          print()
+          print("=" * 70)
+
+          if fee["source"] == "fallback 0":
+              print("WARNING: No fee information was returned.")
+              print("DO NOT start the 2-hour test yet.")
+          else:
+              print("FEE TEST SUCCESS")
+              print("Polymarket fee information was retrieved.")
+          
+          print("=" * 70)
+          PY
+
+          elif [ "${{ github.event.inputs.run_mode }}" = "single" ]; then
 
             echo "RUN MODE: SINGLE TEST"
-            echo "ONE PAPER TRADING CHECK"
             echo "=================================================="
             echo ""
 
