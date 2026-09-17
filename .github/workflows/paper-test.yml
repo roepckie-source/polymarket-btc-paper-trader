@@ -11,6 +11,7 @@ on:
         options:
           - single
           - fee-test
+          - mexc-test
           - 2hours
 
 jobs:
@@ -18,38 +19,75 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
+      # ==================================================
+      # CHECKOUT
+      # ==================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # ==================================================
+      # PYTHON
+      # ==================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+      # ==================================================
+      # DEPENDENCIES
+      # ==================================================
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests
 
+      # ==================================================
+      # STRATEGY TEST
+      # ==================================================
+
       - name: Run strategy tests
         run: |
           python strategy.py
+
+      # ==================================================
+      # PAPER TRADER TEST
+      # ==================================================
 
       - name: Run paper trader tests
         run: |
           python test_paper.py
 
+      # ==================================================
+      # BTC MARKET DATA
+      # ==================================================
+
       - name: Test market data
         run: |
           python market_data.py
+
+      # ==================================================
+      # POLYMARKET DATA
+      # ==================================================
 
       - name: Test Polymarket data
         run: |
           python polymarket_data.py
 
+      # ==================================================
+      # KRAKEN DATA
+      # ==================================================
+
       - name: Test Kraken data
         run: |
           python kraken_test.py
+
+      # ==================================================
+      # SELECTED RUN
+      # ==================================================
 
       - name: Run selected paper trading session
         run: |
@@ -58,20 +96,28 @@ jobs:
           echo "POLYMARKET BTC PAPER TRADER"
           echo "=================================================="
           echo ""
+
           echo "PAPER ONLY"
           echo "NO API"
           echo "NO REAL ORDERS"
           echo "NO WALLET"
           echo "NO REAL MONEY"
+
           echo ""
+
+          # ==================================================
+          # POLYMARKET FEE TEST
+          # ==================================================
 
           if [ "${{ github.event.inputs.run_mode }}" = "fee-test" ]; then
 
             echo "RUN MODE: POLYMARKET FEE TEST"
+
             echo "=================================================="
             echo ""
 
             python - <<'PY'
+
           from polymarket_data import get_market_data
           from paper_live import get_fee_info
 
@@ -84,10 +130,17 @@ jobs:
           print()
           print("CURRENT MARKET")
           print("-" * 70)
-          print(f"Market:       {data.get('market_slug')}")
+
+          print(f"Market: {data.get('market_slug')}")
           print(f"Condition ID: {data.get('condition_id')}")
-          print(f"UP Price:     {data.get('outcome_prices', {}).get('UP')}")
-          print(f"DOWN Price:   {data.get('outcome_prices', {}).get('DOWN')}")
+          print(
+              f"UP Price: "
+              f"{data.get('outcome_prices', {}).get('UP')}"
+          )
+          print(
+              f"DOWN Price: "
+              f"{data.get('outcome_prices', {}).get('DOWN')}"
+          )
 
           token_ids = data.get("token_ids", [])
 
@@ -99,9 +152,11 @@ jobs:
               print(f"{i}: {token}")
 
           if not token_ids:
-              raise RuntimeError("No CLOB token IDs found")
+              raise RuntimeError(
+                  "No CLOB token IDs found"
+              )
 
-          # Test the first available token.
+          # Test first available token.
           token_id = str(token_ids[0])
 
           fee = get_fee_info(
@@ -112,43 +167,104 @@ jobs:
           print()
           print("FEE INFORMATION")
           print("-" * 70)
-          print(f"Fee rate:     {fee['rate']}")
-          print(f"Fee rate %:   {fee['rate'] * 100:.6f}%")
-          print(f"Fee BPS:      {fee['bps']}")
-          print(f"Source:       {fee['source']}")
+
+          print(f"Fee rate: {fee['rate']}")
+          print(
+              f"Fee rate %: "
+              f"{fee['rate'] * 100:.6f}%"
+          )
+          print(f"Fee BPS: {fee['bps']}")
+          print(f"Source: {fee['source']}")
 
           print()
           print("=" * 70)
 
           if fee["source"] == "fallback 0":
-              print("WARNING: No fee information was returned.")
-              print("DO NOT start the 2-hour test yet.")
+
+              print(
+                  "WARNING: No fee information "
+                  "was returned."
+              )
+
+              print(
+                  "DO NOT start the 2-hour test yet."
+              )
+
           else:
+
               print("FEE TEST SUCCESS")
-              print("Polymarket fee information was retrieved.")
-          
+              print(
+                  "Polymarket fee information "
+                  "was retrieved."
+              )
+
           print("=" * 70)
+
           PY
+
+          # ==================================================
+          # MEXC TEST
+          # ==================================================
+
+          elif [ "${{ github.event.inputs.run_mode }}" = "mexc-test" ]; then
+
+            echo "RUN MODE: MEXC BTC 5M UP/DOWN TEST"
+
+            echo "=================================================="
+            echo ""
+
+            echo "PAPER ONLY"
+            echo "NO MEXC API KEY"
+            echo "NO WALLET"
+            echo "NO ORDERS"
+            echo "NO REAL MONEY"
+
+            echo ""
+
+            python mexc_prediction_data.py
+
+            echo ""
+
+            echo "=================================================="
+            echo "MEXC DATA TEST COMPLETE"
+            echo "=================================================="
+
+            echo ""
+            echo "MEXC TEST WAS READ-ONLY."
+            echo "NO REAL TRADING WAS PERFORMED."
+
+          # ==================================================
+          # SINGLE TEST
+          # ==================================================
 
           elif [ "${{ github.event.inputs.run_mode }}" = "single" ]; then
 
             echo "RUN MODE: SINGLE TEST"
+
             echo "=================================================="
             echo ""
 
             python paper_live.py
 
             echo ""
+
             echo "=================================================="
             echo "SINGLE PAPER TEST COMPLETE"
             echo "=================================================="
+
             echo ""
             echo "PAPER ONLY - NO REAL TRADING"
+
+          # ==================================================
+          # 2 HOUR PAPER TEST
+          # ==================================================
 
           else
 
             echo "RUN MODE: 2 HOUR PAPER TRADING SESSION"
+
             echo "24 x 5-minute checks"
+
             echo "=================================================="
             echo ""
 
@@ -163,10 +279,13 @@ jobs:
               python paper_live.py
 
               if [ "$i" -lt 24 ]; then
+
                 echo ""
                 echo "Waiting 5 minutes until next 5-minute window..."
                 echo ""
+
                 sleep 300
+
               fi
 
             done
@@ -175,6 +294,7 @@ jobs:
             echo "=================================================="
             echo "2 HOUR PAPER TRADING SESSION COMPLETE"
             echo "=================================================="
+
             echo ""
             echo "PAPER ONLY - NO REAL TRADING"
 
