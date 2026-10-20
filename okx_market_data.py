@@ -1,4 +1,4 @@
-"""Public OKX candle reader only. No authentication and no order endpoints."""
+"""Public OKX market-data only. No authentication or order endpoints."""
 import os
 import requests
 
@@ -15,14 +15,14 @@ def fetch_candles(inst_id="BTC-USDT", bar="5m", limit=100, session=None):
     payload = response.json()
     if payload.get("code") != "0":
         raise RuntimeError(f"OKX API error: {payload.get('code')} {payload.get('msg')}")
-    parsed = []
+    candles = []
     for row in payload.get("data", []):
         if len(row) < 9:
             continue
-        parsed.append({
+        candles.append({
             "ts": int(row[0]), "open": float(row[1]), "high": float(row[2]),
             "low": float(row[3]), "close": float(row[4]), "volume": float(row[5]),
             "confirmed": row[8] == "1",
         })
-    parsed.sort(key=lambda candle: candle["ts"])
-    return [candle for candle in parsed if candle["confirmed"]]
+    candles.sort(key=lambda x: x["ts"])
+    return [c for c in candles if c["confirmed"]]
