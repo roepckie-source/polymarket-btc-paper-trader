@@ -1,0 +1,11 @@
+{
+  "cash_usdt": 100.0,
+  "btc": 0.0,
+  "entry_price": null,
+  "entry_fee_usdt": 0.0,
+  "stop_price": null,
+  "last_candle_ts": 1792518900000,
+  "equity_peak_usdt": 100.0,
+  "halted": false,
+  "updated_at_utc": "2026-10-20T18:03:46.182828+00:00"
+}
