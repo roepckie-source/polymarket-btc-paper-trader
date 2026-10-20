@@ -15,6 +15,7 @@ on:
           - forsee-test
           - forsee-strategy-test
           - 2hours
+          - historical-backtest
 
 jobs:
   paper-test:
@@ -46,7 +47,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          pip install requests pytest
 
       # ============================================================
       # STRATEGY TEST
@@ -57,12 +58,56 @@ jobs:
           python strategy.py
 
       # ============================================================
+      # HISTORICAL BACKTEST UNIT TESTS
+      # ============================================================
+
+      - name: Test historical backtest
+        run: |
+          python -m unittest test_historical_backtest.py
+
+      # ============================================================
+      # HISTORICAL BACKTEST (CSV REQUIRED)
+      # ============================================================
+
+      - name: Run historical backtest
+        if: github.event.inputs.mode == 'historical-backtest'
+        run: |
+          echo "HISTORICAL PAPER BACKTEST — NO ORDERS PLACED"
+          if [ ! -f historical_btc_5m.csv ]; then
+            echo "ERROR: historical_btc_5m.csv is missing."
+            echo "Upload a real dataset with pre-resolution snapshots and final UP/DOWN outcomes."
+            echo "historical_btc_5m_TEMPLATE.csv is only a template, not historical data."
+            exit 1
+          fi
+          python historical_backtest.py historical_btc_5m.csv \
+            --output historical_backtest_results.csv \
+            --fee-rate 0.01 \
+            --slippage-per-contract 0.001
+
+      - name: Upload historical backtest results
+        if: always() && github.event.inputs.mode == 'historical-backtest' && hashFiles('historical_backtest_results.csv') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-backtest-results
+          path: historical_backtest_results.csv
+          if-no-files-found: error
+          retention-days: 30
+
+      # ============================================================
       # PAPER TRADER TEST
       # ============================================================
 
       - name: Test paper trader
         run: |
           python test_paper.py
+
+      # ============================================================
+      # CROSS-MARKET PAPER SIGNAL TESTS
+      # ============================================================
+
+      - name: Test cross-market paper signal logic
+        run: |
+          python -m pytest -q test_cross_market_paper.py
 
       # ============================================================
       # BTC MARKET DATA
