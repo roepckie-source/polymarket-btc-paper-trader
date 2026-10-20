@@ -1,33 +1,27 @@
-# OKX BTC 5-minute Spot Paper Bot (safe first prototype)
+# OKX BTC 5-minute Spot Paper Bot
 
 ## Safety
-- **Paper mode only.** Uses public candle data and a local virtual portfolio.
-- Contains no OKX order endpoint, no API authentication, no API keys, and no live-order code.
-- Spot only; no leverage and no short selling. A DOWN signal means hold cash or exit a BTC holding.
-- Starting paper equity: €100. Target risk per trade: €2. Maximum position: €20.
-- Uses a provisional 2% stop distance to size the position. Gaps, fees, conversion rates and slippage mean the actual loss can exceed €2.
-- BTC-USDT is treated as approximately EUR in the first prototype. That is only a rough placeholder; use an actual USDT/EUR conversion feed before evaluating EUR P&L.
-- The EMA21/three-rising-closes signal is only a plumbing baseline, not a proven strategy.
+- Paper only: public candle API, local virtual portfolio, no authenticated endpoints, no order submission functions, no API keys.
+- Spot only, no leverage, no short selling. A DOWN signal means exit a BTC holding or remain in cash.
+- Starting paper equity is 100 quote units, intended as a €100-sized simulation. BTC-USDT is quoted in USDT; without an actual USDT/EUR conversion feed, results are not exact EUR accounting.
+- Planned risk per trade: €2 equivalent; maximum notional: 20 quote units. A 2% stop is only a target. Gaps, slippage, conversion and fees can exceed the target loss.
+- EMA21 plus three rising closes is a simple baseline for validating data flow, not a demonstrated profitable strategy.
+- GitHub Actions scheduled runs are isolated workers; this workflow does not preserve portfolio state across runs unless a persistent store is added.
 
 ## Run locally
 ```bash
 python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# macOS/Linux:
-source .venv/bin/activate
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 python -m unittest -v
+pytest -q
 python okx_spot_paper.py
 ```
-Stop with Ctrl+C. It stores `okx_paper_state.json` and `okx_paper_trades.csv` in the working directory.
+Stop with Ctrl+C. Files `okx_paper_state.json` and `okx_paper_trades.csv` are written in the current directory.
 
-## First test plan
-1. Run at least 7 days paper-only with recorded closed candles, simulated fees and no parameter tuning.
-2. Verify no duplicate entries on the same candle and confirm every trade is recorded.
-3. Evaluate net P&L after fees, max drawdown, win/loss ratio, average win/loss and stop overruns.
-4. Compare paper execution assumptions against OKX spread and actual EUR/USDT conversion.
-5. Do not enable live trading as part of this package.
+## GitHub Actions
+Copy `.github/workflows/okx-paper.yml` into your repository. Run manually from Actions. This workflow runs unit tests and one paper evaluation. It does not place live orders.
 
-## Important limitation
-This prototype buys BTC on an UP signal and sells/holds cash on a DOWN signal. Spot trading cannot profit from a falling price without borrowing/shorting, which this bot explicitly does not do.
+## Next validation steps
+Run for at least 7 days with persistent trade/state storage, realistic spread/fee assumptions, and exact USDT/EUR conversion. Review net P&L, drawdown, stop overruns and trade count. Do not enable live trading based on a few paper trades.
