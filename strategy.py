@@ -417,6 +417,14 @@ def evaluate(
         probability = 1.0 - probability_up
 
     # --------------------------------------------------------
+    # Raw edge diagnostic (computed before entry filters)
+    # --------------------------------------------------------
+    # This is the model probability minus the supplied market price.
+    # It is diagnostic only: it is not proof of a tradable edge and
+    # does not include fees, spread, slippage, or model calibration.
+    edge = probability - market_price
+
+    # --------------------------------------------------------
     # Probability filter
     # --------------------------------------------------------
 
@@ -426,23 +434,16 @@ def evaluate(
             side,
             probability,
             market_price,
-            0.0,
+            edge,
             0.0,
             0.0,
             (
                 "Probability too low: "
-                f"{probability:.2%}"
+                f"{probability:.2%}; "
+                f"raw edge vs market: {edge:.2%}; "
+                f"required probability: {MIN_PROBABILITY:.2%}"
             ),
         )
-
-    # --------------------------------------------------------
-    # Edge
-    # --------------------------------------------------------
-
-    edge = (
-        probability
-        - market_price
-    )
 
     if edge < MIN_EDGE:
         return StrategyResult(
