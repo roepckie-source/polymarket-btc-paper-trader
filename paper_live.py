@@ -434,6 +434,31 @@ def get_resolved_side(market_slug):
 
 
 # ============================================================
+# SETTLEMENT MATH (pure function; covered by unit tests)
+# ============================================================
+
+def calculate_settlement(side, winning_side, position, contracts, fee_usdc):
+    """Return (result, payout, gross_pnl, net_pnl).
+
+    position is the amount spent on shares, excluding the separately
+    recorded trading fee. Winning shares pay $1 each; losing shares pay $0.
+    """
+    side = str(side).strip().upper()
+    winning_side = str(winning_side).strip().upper()
+    if side not in ("UP", "DOWN") or winning_side not in ("UP", "DOWN"):
+        raise ValueError("side and winning_side must be UP or DOWN")
+    position = float(position)
+    contracts = float(contracts)
+    fee_usdc = float(fee_usdc)
+    if position < 0 or contracts < 0 or fee_usdc < 0:
+        raise ValueError("position, contracts and fee must be non-negative")
+    payout = contracts if side == winning_side else 0.0
+    gross_pnl = payout - position
+    net_pnl = gross_pnl - fee_usdc
+    return ("WIN" if side == winning_side else "LOSS", payout, gross_pnl, net_pnl)
+
+
+# ============================================================
 # RESOLVE OPEN TRADE
 # ============================================================
 
@@ -502,24 +527,15 @@ def resolve_open_trade(open_trade, bankroll):
         open_trade.get("fee_usdc") or 0
     )
 
-    # Winning shares pay $1 each.
-    payout = (
-        contracts
-        if winning_side == side
-        else 0.0
+    result, payout, gross_pnl, net_pnl = calculate_settlement(
+        side=side,
+        winning_side=winning_side,
+        position=position,
+        contracts=contracts,
+        fee_usdc=fee_usdc,
     )
-
-    gross_pnl = payout - position
-
-    net_pnl = gross_pnl - fee_usdc
 
     new_bankroll = bankroll + net_pnl
-
-    result = (
-        "WIN"
-        if winning_side == side
-        else "LOSS"
-    )
 
     # --------------------------------------------------------
     # BTC INFORMATION
@@ -534,7 +550,7 @@ def resolve_open_trade(open_trade, bankroll):
         btc_data = get_btc_market_data()
 
         btc_close = float(
-            btc_data["btc_open"]
+            btc_data["btc_current"]
         )
 
     except Exception:

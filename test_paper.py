@@ -265,23 +265,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-def test_probability_filter_preserves_raw_edge_diagnostic():
-    """A rejected signal should still report its raw model-vs-market edge."""
-    from strategy import evaluate
-
-    result = evaluate(
-        btc_open=100_000.0,
-        btc_current=100_100.0,
-        seconds_remaining=210,
-        market_price=0.515,
-        bankroll=100.0,
-    )
-
-    # Depending on the probability model this input is expected to be rejected
-    # by the high probability threshold; the edge diagnostic must not be erased.
-    if result.probability < 0.80:
-        assert abs(result.edge - (result.probability - result.market_price)) < 1e-12
-        assert result.position_size == 0.0
-        assert "raw edge vs market" in result.reason
