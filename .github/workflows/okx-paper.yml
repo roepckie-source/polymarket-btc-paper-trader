@@ -1,0 +1,27 @@
+name: OKX BTC Spot Paper Check
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paper-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m unittest -v
+      - name: Run one paper evaluation
+        run: python -c "from okx_spot_paper import run_once; run_once()"
+      - name: Upload paper log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: okx-btc-paper-log
+          path: |
+            okx_paper_state.json
+            okx_paper_trades.csv
+          if-no-files-found: warn
