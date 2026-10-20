@@ -16,6 +16,8 @@ Optional columns: `down_price`, `fee_rate`, `slippage_per_contract` (the command
 
 ## Run
 
+The GitHub Actions workflow now has a `historical-backtest` mode. It expects a real file named `historical_btc_5m.csv` in the repository and uploads `historical_backtest_results.csv` as an artifact. `historical_btc_5m_TEMPLATE.csv` only documents the header; it is not data and cannot produce performance results.
+
 ```bash
 python historical_backtest.py historical_btc_5m.csv --output historical_backtest_results.csv --fee-rate 0.01 --slippage-per-contract 0.001
 python -m unittest test_historical_backtest.py
@@ -25,4 +27,4 @@ Use fees and slippage matching the intended venue. Defaults are zero and therefo
 
 ## Important limitations
 
-The repository upload did not include a genuine historical dataset with both pre-resolution snapshots and final outcomes. Existing `test_*.csv` files are small synthetic test fixtures, not evidence of strategy performance. The backtest therefore cannot honestly report profitability until a suitable dataset is supplied. This first version evaluates the existing Polymarket strategy; it does not yet simulate Coinbase/KuCoin spot/futures order books or cross-market execution.
+The repository upload did not include a genuine historical dataset with both pre-resolution snapshots and final outcomes. Existing `test_*.csv` files are small synthetic test fixtures, not evidence of strategy performance. The backtest therefore cannot honestly report profitability until a suitable dataset is supplied. This version evaluates the existing Polymarket strategy; it does not yet simulate Coinbase/KuCoin spot/futures order books or cross-market execution. The backtest now correctly supplies the UP or DOWN token price matching the direction selected by the strategy.

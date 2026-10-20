@@ -70,11 +70,16 @@ def run_backtest(rows: list[dict[str, str]], bankroll: float = 100.0,
         if outcome not in {"UP", "DOWN"}:
             raise ValueError(f"Invalid outcome {outcome!r}; use UP or DOWN only")
         up_price = _number(row, "up_price")
-        side = "UP" if up_price >= 0.5 else "DOWN"
-        market_price = up_price if side == "UP" else _number(row, "down_price", 1.0 - up_price)
+        down_price = _number(row, "down_price", 1.0 - up_price)
+        btc_open = _number(row, "btc_open")
+        btc_current = _number(row, "btc_current")
+        # The strategy chooses UP/DOWN from the BTC move. Price the same
+        # side it will evaluate; do not infer the side from which token is > 0.50.
+        expected_side = "UP" if btc_current >= btc_open else "DOWN"
+        market_price = up_price if expected_side == "UP" else down_price
         result = strategy.evaluate(
-            btc_open=_number(row, "btc_open"),
-            btc_current=_number(row, "btc_current"),
+            btc_open=btc_open,
+            btc_current=btc_current,
             seconds_remaining=int(_number(row, "seconds_remaining")),
             market_price=market_price,
             bankroll=cash,

@@ -10,6 +10,16 @@ class HistoricalBacktestTests(unittest.TestCase):
         self.assertEqual(summary["trades"], 0)
         self.assertEqual(summary["ending_bankroll"], 100.0)
 
+
+    def test_uses_market_price_for_btc_direction(self):
+        # BTC moves down, so strategy must be priced against DOWN, not UP.
+        rows = [{"timestamp":"t1", "btc_open":"100", "btc_current":"99.8",
+                 "seconds_remaining":"120", "up_price":"0.30", "down_price":"0.70",
+                 "outcome":"DOWN"}]
+        trades, summary = run_backtest(rows)
+        self.assertEqual(trades[0]["market_price"], 0.70)
+        self.assertEqual(trades[0]["side"], "DOWN")
+
     def test_invalid_outcome_rejected(self):
         rows = [{"timestamp":"t1", "btc_open":"100", "btc_current":"100.01",
                  "seconds_remaining":"120", "up_price":"0.51", "outcome":"UNKNOWN"}]
