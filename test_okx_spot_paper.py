@@ -35,35 +35,46 @@ class PaperBotTests(unittest.TestCase):
         signal, reason = make_signal(candles([100, 101]))
 
         self.assertEqual(signal, "HOLD")
-        self.assertEqual(reason, "not enough confirmed candles")
+        self.assertEqual(
+            reason,
+            "not enough confirmed candles",
+        )
 
     def test_duplicate_candle_no_double_trade(self):
         cs = candles(list(range(100, 125)))
+
         state, first_result = step(initial_state(), cs)
 
         self.assertEqual(first_result["action"], "BUY")
 
+        first_btc = state["btc"]
+        first_cash = state["cash_usdt"]
+
         state, second_result = step(state, cs)
 
         self.assertEqual(second_result["action"], "NONE")
-        self.assertIn("already processed", second_result["reason"])
-
-        # No additional BTC was purchased.
-        self.assertAlmostEqual(
-            state["btc"],
-            first_result["btc"],
+        self.assertIn(
+            "already processed",
+            second_result["reason"],
         )
+
+        # A duplicate candle must not change the position or cash.
+        self.assertAlmostEqual(state["btc"], first_btc)
+        self.assertAlmostEqual(state["cash_usdt"], first_cash)
 
     def test_buy_size_respects_cap_and_stop(self):
         cs = candles(list(range(100, 125)))
+
         state, result = step(initial_state(), cs)
 
         self.assertEqual(result["action"], "BUY")
         self.assertLessEqual(result["notional_usdt"], 20.0)
+
         self.assertLessEqual(
             result["notional_usdt"] + result["fee_usdt"],
             100.0,
         )
+
         self.assertAlmostEqual(
             state["stop_price"],
             cs[-1]["close"] * 0.98,
@@ -71,10 +82,11 @@ class PaperBotTests(unittest.TestCase):
 
     def test_stop_loss_closes_position(self):
         cs = candles(list(range(100, 125)))
+
         state, buy_result = step(initial_state(), cs)
 
         self.assertEqual(buy_result["action"], "BUY")
-        self.assertGreater(state["btc"], 0)
+        self.assertGreater(state["btc"], 0.0)
 
         stop_price = state["stop_price"]
         falling_price = stop_price * 0.99
@@ -89,11 +101,12 @@ class PaperBotTests(unittest.TestCase):
         self.assertEqual(state["btc"], 0.0)
         self.assertIsNone(state["entry_price"])
         self.assertIsNone(state["stop_price"])
-        self.assertIsNone(state["entry_fee_usdt"]) if False else None
+        self.assertEqual(state["entry_fee_usdt"], 0.0)
         self.assertGreaterEqual(state["cash_usdt"], 0.0)
 
     def test_no_shorting(self):
         cs = candles(list(range(130, 100, -1)))
+
         state, result = step(initial_state(), cs)
 
         self.assertEqual(state["btc"], 0.0)
@@ -101,6 +114,7 @@ class PaperBotTests(unittest.TestCase):
 
     def test_state_survives_save_and_reload(self):
         cs = candles(list(range(100, 125)))
+
         state, result = step(initial_state(), cs)
 
         self.assertEqual(result["action"], "BUY")
@@ -108,7 +122,10 @@ class PaperBotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "paper_state.json"
 
-            with patch("okx_spot_paper.STATE_PATH", state_path):
+            with patch(
+                "okx_spot_paper.STATE_PATH",
+                state_path,
+            ):
                 save_state(state)
                 restored_state = load_state()
 
@@ -123,6 +140,10 @@ class PaperBotTests(unittest.TestCase):
             self.assertEqual(
                 restored_state["entry_price"],
                 state["entry_price"],
+            )
+            self.assertEqual(
+                restored_state["entry_fee_usdt"],
+                state["entry_fee_usdt"],
             )
             self.assertEqual(
                 restored_state["stop_price"],
