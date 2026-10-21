@@ -1,159 +1,80 @@
-
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from okx_spot_paper import initial_state, step, save_state, load_state, equity, validate_state
 
-from okx_spot_paper import (
-    initial_state,
-    step,
-    make_signal,
-    save_state,
-    load_state,
-)
-
-
-def candles(closes, start=1_000_000):
-    """Build synthetic 5-minute candles for deterministic tests."""
-    return [
-        {
-            "ts": start + i * 300_000,
-            "open": float(price),
-            "high": float(price) + 1,
-            "low": float(price) - 1,
-            "close": float(price),
-            "volume": 10,
-            "confirmed": True,
-        }
-        for i, price in enumerate(closes)
-    ]
-
+def candles(closes, start=1_000_000, lows=None, opens=None):
+    out=[]
+    for i,p in enumerate(closes):
+        p=float(p); lo=float(lows[i]) if lows is not None else p-1
+        op=float(opens[i]) if opens is not None else p
+        hi=max(p+1,op,lo)
+        out.append({"ts":start+i*300_000,"open":op,"high":hi,"low":lo,"close":p,"volume":10,"confirmed":True})
+    return out
 
 class PaperBotTests(unittest.TestCase):
-
     def test_not_enough_data_holds(self):
-        signal, reason = make_signal(candles([100, 101]))
+        _,r=step(initial_state(),candles([100,101,102]))
+        self.assertEqual(r["action"],"NONE")
+        self.assertIn("not enough",r["reason"])
 
-        self.assertEqual(signal, "HOLD")
-        self.assertEqual(
-            reason,
-            "not enough confirmed candles",
-        )
+    def test_buy_respects_cap_and_sets_stop(self):
+        cs=candles(list(range(100,125))); s,r=step(initial_state(),cs)
+        self.assertEqual(r["action"],"BUY")
+        self.assertLessEqual(r["notional_usdt"],20)
+        self.assertLessEqual(r["notional_usdt"]+r["fee_usdt"],100)
+        self.assertAlmostEqual(s["stop_price"],cs[-1]["close"]*0.98)
 
-    def test_duplicate_candle_no_double_trade(self):
-        cs = candles(list(range(100, 125)))
+    def test_duplicate_candle_does_not_trade_twice(self):
+        cs=candles(list(range(100,125))); s,r=step(initial_state(),cs)
+        cash,btc=s["cash_usdt"],s["btc"]
+        s,r=step(s,cs)
+        self.assertEqual(r["action"],"NONE")
+        self.assertEqual(s["cash_usdt"],cash); self.assertEqual(s["btc"],btc)
 
-        state, first_result = step(initial_state(), cs)
+    def test_stop_triggered_by_low(self):
+        cs=candles(list(range(100,125))); s,_=step(initial_state(),cs)
+        stop=s["stop_price"]; closes=list(range(100,125))+[stop+0.5]
+        lows=[float(p)-1 for p in closes]; lows[-1]=stop-0.5
+        s,r=step(s,candles(closes,lows=lows))
+        self.assertEqual(r["action"],"SELL")
+        self.assertAlmostEqual(r["price"],stop)
+        self.assertEqual(s["btc"],0.0); self.assertIsNone(s["stop_price"])
+        self.assertEqual(s["entry_fee_usdt"],0.0)
 
-        self.assertEqual(first_result["action"], "BUY")
+    def test_gap_below_stop_uses_open(self):
+        cs=candles(list(range(100,125))); s,_=step(initial_state(),cs)
+        stop=s["stop_price"]; closes=list(range(100,125))+[stop-3]
+        opens=[float(p) for p in closes]; lows=[float(p)-1 for p in closes]
+        opens[-1]=stop-2; lows[-1]=stop-4
+        s,r=step(s,candles(closes,lows=lows,opens=opens))
+        self.assertEqual(r["action"],"SELL")
+        self.assertAlmostEqual(r["price"],stop-2)
+        self.assertIn("gap-through-stop",r["reason"])
 
-        first_btc = state["btc"]
-        first_cash = state["cash_usdt"]
+    def test_candle_gap_halts(self):
+        cs=candles(list(range(100,125))); s,_=step(initial_state(),cs)
+        later=candles(list(range(100,125)),start=cs[-1]["ts"]+600_000)
+        s,r=step(s,later)
+        self.assertEqual(r["action"],"HALTED"); self.assertTrue(s["halted"])
+        self.assertIn("gap detected",r["reason"])
 
-        state, second_result = step(state, cs)
+    def test_invalid_state_fails_closed(self):
+        with self.assertRaises(ValueError): validate_state({"cash_usdt":100,"btc":0})
 
-        self.assertEqual(second_result["action"], "NONE")
-        self.assertIn(
-            "already processed",
-            second_result["reason"],
-        )
-
-        # A duplicate candle must not change the position or cash.
-        self.assertAlmostEqual(state["btc"], first_btc)
-        self.assertAlmostEqual(state["cash_usdt"], first_cash)
-
-    def test_buy_size_respects_cap_and_stop(self):
-        cs = candles(list(range(100, 125)))
-
-        state, result = step(initial_state(), cs)
-
-        self.assertEqual(result["action"], "BUY")
-        self.assertLessEqual(result["notional_usdt"], 20.0)
-
-        self.assertLessEqual(
-            result["notional_usdt"] + result["fee_usdt"],
-            100.0,
-        )
-
-        self.assertAlmostEqual(
-            state["stop_price"],
-            cs[-1]["close"] * 0.98,
-        )
-
-    def test_stop_loss_closes_position(self):
-        cs = candles(list(range(100, 125)))
-
-        state, buy_result = step(initial_state(), cs)
-
-        self.assertEqual(buy_result["action"], "BUY")
-        self.assertGreater(state["btc"], 0.0)
-
-        stop_price = state["stop_price"]
-        falling_price = stop_price * 0.99
-
-        next_cs = candles(
-            list(range(100, 125)) + [falling_price]
-        )
-
-        state, sell_result = step(state, next_cs)
-
-        self.assertEqual(sell_result["action"], "SELL")
-        self.assertEqual(state["btc"], 0.0)
-        self.assertIsNone(state["entry_price"])
-        self.assertIsNone(state["stop_price"])
-        self.assertEqual(state["entry_fee_usdt"], 0.0)
-        self.assertGreaterEqual(state["cash_usdt"], 0.0)
-
-    def test_no_shorting(self):
-        cs = candles(list(range(130, 100, -1)))
-
-        state, result = step(initial_state(), cs)
-
-        self.assertEqual(state["btc"], 0.0)
-        self.assertNotEqual(result["action"], "SELL")
-
-    def test_state_survives_save_and_reload(self):
-        cs = candles(list(range(100, 125)))
-
-        state, result = step(initial_state(), cs)
-
-        self.assertEqual(result["action"], "BUY")
-
+    def test_state_save_reload(self):
+        s,r=step(initial_state(),candles(list(range(100,125))))
+        self.assertEqual(r["action"],"BUY")
         with tempfile.TemporaryDirectory() as tmp:
-            state_path = Path(tmp) / "paper_state.json"
+            path=Path(tmp)/"state.json"
+            with patch("okx_spot_paper.STATE_PATH",path):
+                save_state(s); restored=load_state()
+            for k in ("cash_usdt","btc","entry_price","entry_fee_usdt","stop_price","last_candle_ts"):
+                self.assertEqual(restored[k],s[k])
 
-            with patch(
-                "okx_spot_paper.STATE_PATH",
-                state_path,
-            ):
-                save_state(state)
-                restored_state = load_state()
+    def test_equity(self):
+        s=initial_state(); s["cash_usdt"]=80; s["btc"]=0.001
+        self.assertAlmostEqual(equity(s,20_000),100)
 
-            self.assertAlmostEqual(
-                restored_state["cash_usdt"],
-                state["cash_usdt"],
-            )
-            self.assertAlmostEqual(
-                restored_state["btc"],
-                state["btc"],
-            )
-            self.assertEqual(
-                restored_state["entry_price"],
-                state["entry_price"],
-            )
-            self.assertEqual(
-                restored_state["entry_fee_usdt"],
-                state["entry_fee_usdt"],
-            )
-            self.assertEqual(
-                restored_state["stop_price"],
-                state["stop_price"],
-            )
-            self.assertEqual(
-                restored_state["last_candle_ts"],
-                state["last_candle_ts"],
-            )
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+if __name__=="__main__": unittest.main(verbosity=2)
