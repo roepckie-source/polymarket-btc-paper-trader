@@ -1,10 +1,8 @@
 
-name: OKX BTC Spot Paper Check
+name: OKX BTC Spot Paper Check - 2 Hours
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "*/5 * * * *"
 
 permissions:
   contents: write
@@ -16,7 +14,7 @@ concurrency:
 jobs:
   paper-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 125
 
     steps:
       - name: Checkout repository
@@ -35,55 +33,111 @@ jobs:
       - name: Run unit tests
         run: python -m unittest -v
 
-      - name: Run pytest
+      - name: Run pytest if installed
         run: |
           if python -m pytest --version >/dev/null 2>&1; then
             python -m pytest -q
           else
-            echo "pytest is not installed; skipping pytest."
+            echo "pytest not installed; skipping."
           fi
 
-      - name: Run one paper evaluation
-        run: python -c "from okx_spot_paper import run_once; run_once()"
+      - name: Run paper trading for two hours
+        shell: bash
+        run: |
+          set -u
+
+          START_TIME=$(date +%s)
+          END_TIME=$((START_TIME + 7200))
+          NEXT_RUN=$START_TIME
+          RUN_COUNT=0
+
+          echo "Starting 2-hour BTC paper trading test."
+          echo "No real orders will be placed."
+
+          while [ "$(date +%s)" -lt "$END_TIME" ]; do
+            RUN_COUNT=$((RUN_COUNT + 1))
+
+            echo "========================================"
+            echo "Paper evaluation number: $RUN_COUNT"
+            date -u
+
+            if python -c \
+              "from okx_spot_paper import run_once; run_once()"
+            then
+              echo "Evaluation completed."
+            else
+              echo "WARNING: Evaluation failed; continuing test."
+            fi
+
+            NEXT_RUN=$((NEXT_RUN + 300))
+            NOW=$(date +%s)
+
+            if [ "$NOW" -ge "$END_TIME" ]; then
+              break
+            fi
+
+            SLEEP_FOR=$((NEXT_RUN - NOW))
+
+            if [ "$SLEEP_FOR" -gt 0 ]; then
+              REMAINING=$((END_TIME - NOW))
+
+              if [ "$SLEEP_FOR" -gt "$REMAINING" ]; then
+                SLEEP_FOR=$REMAINING
+              fi
+
+              sleep "$SLEEP_FOR"
+            fi
+          done
+
+          echo "Two-hour paper test finished."
+          echo "Total evaluation attempts: $RUN_COUNT"
 
       - name: Check paper files
         if: always()
         run: |
           if [ -f okx_paper_state.json ]; then
             echo "Paper state file exists."
+            cat okx_paper_state.json
           else
-            echo "Paper state file was not created."
+            echo "WARNING: Paper state file missing."
           fi
 
           if [ -f okx_paper_trades.csv ]; then
             echo "Paper trades file exists."
+            cat okx_paper_trades.csv
           else
-            echo "Paper trades file was not created."
+            echo "WARNING: Paper trades file missing."
           fi
 
       - name: Persist paper state and trades
-        if: success()
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
 
-          touch okx_paper_state.json okx_paper_trades.csv
-
-          git add okx_paper_state.json okx_paper_trades.csv
-
-          if ! git diff --cached --quiet; then
-            git commit -m "Update OKX paper trading state"
-            git push origin HEAD:main
-          else
-            echo "No paper state or trade changes to commit."
+          if [ -f okx_paper_state.json ]; then
+            git add okx_paper_state.json
           fi
 
-      - name: Upload paper log
+          if [ -f okx_paper_trades.csv ]; then
+            git add okx_paper_trades.csv
+          fi
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Save two-hour OKX paper test results"
+            git push origin HEAD:main
+          else
+            echo "No paper files changed."
+          fi
+
+      - name: Upload two-hour paper results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: okx-btc-paper-log
+          name: okx-btc-paper-2-hour-results
           path: |
             okx_paper_state.json
             okx_paper_trades.csv
           if-no-files-found: warn
+          retention-days: 30
