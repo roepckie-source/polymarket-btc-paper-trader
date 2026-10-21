@@ -4,8 +4,8 @@
   "entry_price": 82900.0,
   "entry_fee_usdt": 0.02,
   "stop_price": 81242.0,
-  "last_candle_ts": 1792566000000,
-  "equity_peak_usdt": 100.0,
+  "last_candle_ts": 1792575600000,
+  "equity_peak_usdt": 100.08324788756121,
   "halted": false,
-  "updated_at_utc": "2026-10-21T07:05:27.384616+00:00"
+  "updated_at_utc": "2026-10-21T09:47:59.411470+00:00"
 }
