@@ -37,30 +37,30 @@ jobs:
       - name: Run paper trading for two hours
         shell: bash
         run: |
-          set -u
+          set -euo pipefail
           START_TIME=$(date +%s)
           END_TIME=$((START_TIME + 7200))
           NEXT_RUN=$START_TIME
           RUN_COUNT=0
-          echo "Starting 2-hour BTC paper trading test. No real orders."
+          echo "Starting 2-hour BTC paper trading test. Paper only; no real orders."
           while [ "$(date +%s)" -lt "$END_TIME" ]; do
             RUN_COUNT=$((RUN_COUNT + 1))
             echo "========================================"
             echo "Paper evaluation number: $RUN_COUNT"
             date -u
-            if python - <<'PY'
+            # A risk halt or runtime error must fail the workflow, not just break the loop.
+            if ! python - <<'PY'
           from okx_spot_paper import run_once
           state, result = run_once()
           if state.get("halted") or result.get("action") == "HALTED":
-              print("RISK HALT: stopping workflow loop; manual review required.")
+              print("RISK HALT: " + str(state.get("halt_reason") or result.get("reason") or "unknown cause"))
               raise SystemExit(3)
           PY
             then
-              echo "Evaluation completed."
-            else
-              echo "STOP: evaluation failed or paper bot halted. No further evaluations."
-              break
+              echo "ERROR: paper evaluation failed or safety halt is active. Review saved state and logs."
+              exit 1
             fi
+            echo "Evaluation completed without a safety halt."
             NEXT_RUN=$((NEXT_RUN + 300))
             NOW=$(date +%s)
             if [ "$NOW" -ge "$END_TIME" ]; then break; fi
@@ -71,7 +71,7 @@ jobs:
               sleep "$SLEEP_FOR"
             fi
           done
-          echo "Paper test loop ended."
+          echo "Paper test loop completed."
           echo "Total evaluation attempts: $RUN_COUNT"
       - name: Check paper files
         if: always()
