@@ -51,16 +51,19 @@ class PaperBotTests(unittest.TestCase):
     def test_candle_gap_halts_without_advancing_cursor(self):
         cs=candles(list(range(100,125))); s,_=step(initial_state(),cs)
         old=s["last_candle_ts"]
-        later=candles([130],start=old+600_000)
+        later=candles([124],start=old) + candles([130],start=old+600_000)
         s,r=step(s,later)
         self.assertEqual(r["action"],"HALTED"); self.assertTrue(s["halted"])
         self.assertIn("manual recovery required",r["reason"])
+        self.assertIn("timestamp gap detected", s["halt_reason"])
+        self.assertIsNotNone(s["halted_at_utc"])
         self.assertEqual(s["last_candle_ts"],old)
     def test_state_already_halted_never_trades_or_advances(self):
         s=initial_state(); s["halted"]=True; old=123456
         s["last_candle_ts"]=old
         s,r=step(s,candles(list(range(100,125))))
         self.assertEqual(r["action"],"HALTED")
+        self.assertIn("manual review required", r["reason"])
         self.assertEqual(s["last_candle_ts"],old)
     def test_catches_up_contiguous_candles(self):
         first=candles(list(range(100,125)))
@@ -83,7 +86,7 @@ class PaperBotTests(unittest.TestCase):
             path=Path(tmp)/"state.json"
             with patch("okx_spot_paper.STATE_PATH",path):
                 save_state(s); restored=load_state()
-            for k in ("cash_usdt","btc","entry_price","entry_fee_usdt","stop_price","last_candle_ts"):
+            for k in ("cash_usdt","btc","entry_price","entry_fee_usdt","stop_price","last_candle_ts","halt_reason","halted_at_utc"):
                 self.assertEqual(restored[k],s[k])
     def test_equity(self):
         s=initial_state(); s["cash_usdt"]=80; s["btc"]=0.001

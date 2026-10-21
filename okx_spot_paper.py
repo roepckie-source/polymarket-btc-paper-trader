@@ -33,7 +33,8 @@ def make_signal(candles):
 def initial_state():
     return {"cash_usdt":float(STARTING_EQUITY_QUOTE),"btc":0.0,"entry_price":None,
             "entry_fee_usdt":0.0,"stop_price":None,"last_candle_ts":None,
-            "equity_peak_usdt":float(STARTING_EQUITY_QUOTE),"halted":False,"updated_at_utc":None}
+            "equity_peak_usdt":float(STARTING_EQUITY_QUOTE),"halted":False,
+            "halt_reason":None,"halted_at_utc":None,"updated_at_utc":None}
 
 def validate_state(data):
     required = ("cash_usdt","btc","entry_price","entry_fee_usdt","stop_price","last_candle_ts","equity_peak_usdt","halted")
@@ -46,6 +47,15 @@ def validate_state(data):
     if data["cash_usdt"] < 0 or data["btc"] < 0 or data["entry_fee_usdt"] < 0:
         raise ValueError("Paper state contains negative balances")
     if not isinstance(data["halted"],bool): raise ValueError("halted must be boolean")
+    # Backward-compatible migration for state files created before halt diagnostics existed.
+    data.setdefault("halt_reason", None)
+    data.setdefault("halted_at_utc", None)
+    if data["halt_reason"] is not None and not isinstance(data["halt_reason"], str):
+        raise ValueError("halt_reason must be a string or null")
+    if data["halted_at_utc"] is not None and not isinstance(data["halted_at_utc"], str):
+        raise ValueError("halted_at_utc must be a string or null")
+    if data["halted"] and not data["halt_reason"]:
+        data["halt_reason"] = "legacy halted state; original reason unavailable; manual review required"
     if data["last_candle_ts"] is not None and (isinstance(data["last_candle_ts"],bool) or not isinstance(data["last_candle_ts"],int)):
         raise ValueError("last_candle_ts must be an integer or null")
     if data["btc"] > 0:
@@ -100,6 +110,13 @@ def validate_candle(c):
     if not float(c["low"]) <= float(c["open"]) <= float(c["high"]): raise ValueError("Candle open outside low/high")
     if not float(c["low"]) <= float(c["close"]) <= float(c["high"]): raise ValueError("Candle close outside low/high")
 
+def set_halt(state, reason):
+    """Latch a safety halt with a durable, human-readable cause."""
+    state["halted"] = True
+    state["halt_reason"] = str(reason)
+    state["halted_at_utc"] = utc_now()
+
+
 def _process_one(state, history, fee_rate, max_risk, max_position, stop_distance):
     candle=history[-1]
     price=float(candle["close"]); ts=int(candle["ts"])
@@ -124,14 +141,15 @@ def _process_one(state, history, fee_rate, max_risk, max_position, stop_distance
         state["cash_usdt"] += gross-exit_fee
         state.update({"btc":0.0,"entry_price":None,"entry_fee_usdt":0.0,"stop_price":None})
         if pnl < -float(max_risk):
-            state["halted"]=True; exit_reason += "; risk threshold exceeded; loss can exceed target"
+            exit_reason += "; risk threshold exceeded; loss can exceed target"
+            set_halt(state, exit_reason)
         return {"action":"SELL","reason":exit_reason,"price":exec_price,"btc":qty,
                 "notional_usdt":gross,"fee_usdt":exit_fee,"realized_pnl_usdt":pnl,"candle_ts":ts}
     if signal!="BUY": return {"action":"NONE","reason":reason,"candle_ts":ts}
     notional=min(float(max_position),float(max_risk)/stop_distance,float(state["cash_usdt"])/(1+fee_rate))
     if notional<=0:
-        state["halted"]=True
-        return {"action":"HALTED","reason":"insufficient virtual cash","candle_ts":ts}
+        set_halt(state, "insufficient virtual cash")
+        return {"action":"HALTED","reason":state["halt_reason"],"candle_ts":ts}
     qty=notional/price; fee=notional*fee_rate
     state["cash_usdt"]-=notional+fee
     state.update({"btc":qty,"entry_price":price,"entry_fee_usdt":fee,"stop_price":price*(1-stop_distance)})
@@ -139,7 +157,9 @@ def _process_one(state, history, fee_rate, max_risk, max_position, stop_distance
 
 def step(state,candles,fee_rate=FEE_RATE,max_risk=MAX_RISK_QUOTE,max_position=MAX_POSITION_QUOTE,stop_distance=STOP_DISTANCE):
     if state.get("halted"):
-        return state,{"action":"HALTED","reason":"risk halt is active; manual review required"}
+        reason = state.get("halt_reason") or "legacy halted state; original reason unavailable; manual review required"
+        state["halt_reason"] = reason
+        return state,{"action":"HALTED","reason":reason}
     if not candles: raise ValueError("No confirmed candles received")
     if not 0 <= fee_rate < 1: raise ValueError("fee_rate must be between 0 and 1")
     if max_risk <= 0 or max_position <= 0: raise ValueError("Risk and position limits must be positive")
@@ -157,8 +177,9 @@ def step(state,candles,fee_rate=FEE_RATE,max_risk=MAX_RISK_QUOTE,max_position=MA
         prev=int(prev)
         matches=[i for i,c in enumerate(ordered) if int(c["ts"])==prev]
         if not matches:
-            state["halted"]=True
-            return state,{"action":"HALTED","reason":"last processed candle is outside fetched history; manual recovery required"}
+            reason = "saved candle cursor is outside fetched history; cannot safely reconstruct missed candles; manual recovery required"
+            set_halt(state, reason)
+            return state,{"action":"HALTED","reason":reason}
         start=matches[-1]
         todo=ordered[start+1:]
         histories=[ordered[:start+2+i] for i in range(len(todo))]
@@ -169,8 +190,9 @@ def step(state,candles,fee_rate=FEE_RATE,max_risk=MAX_RISK_QUOTE,max_position=MA
         for c in todo:
             ts=int(c["ts"])
             if ts-expected != FIVE_MINUTES_MS:
-                state["halted"]=True
-                return state,{"action":"HALTED","reason":"candle gap detected; cursor preserved; manual recovery required"}
+                reason = f"candle timestamp gap detected: expected {expected + FIVE_MINUTES_MS}, received {ts}; cursor preserved; manual recovery required"
+                set_halt(state, reason)
+                return state,{"action":"HALTED","reason":reason}
             expected=ts
     events=[]
     for hist in histories:
