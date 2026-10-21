@@ -18,21 +18,18 @@ class PaperBotTests(unittest.TestCase):
         _,r=step(initial_state(),candles([100,101,102]))
         self.assertEqual(r["action"],"NONE")
         self.assertIn("not enough",r["reason"])
-
     def test_buy_respects_cap_and_sets_stop(self):
         cs=candles(list(range(100,125))); s,r=step(initial_state(),cs)
         self.assertEqual(r["action"],"BUY")
         self.assertLessEqual(r["notional_usdt"],20)
         self.assertLessEqual(r["notional_usdt"]+r["fee_usdt"],100)
         self.assertAlmostEqual(s["stop_price"],cs[-1]["close"]*0.98)
-
     def test_duplicate_candle_does_not_trade_twice(self):
         cs=candles(list(range(100,125))); s,r=step(initial_state(),cs)
         cash,btc=s["cash_usdt"],s["btc"]
         s,r=step(s,cs)
         self.assertEqual(r["action"],"NONE")
         self.assertEqual(s["cash_usdt"],cash); self.assertEqual(s["btc"],btc)
-
     def test_stop_triggered_by_low(self):
         cs=candles(list(range(100,125))); s,_=step(initial_state(),cs)
         stop=s["stop_price"]; closes=list(range(100,125))+[stop+0.5]
@@ -42,7 +39,6 @@ class PaperBotTests(unittest.TestCase):
         self.assertAlmostEqual(r["price"],stop)
         self.assertEqual(s["btc"],0.0); self.assertIsNone(s["stop_price"])
         self.assertEqual(s["entry_fee_usdt"],0.0)
-
     def test_gap_below_stop_uses_open(self):
         cs=candles(list(range(100,125))); s,_=step(initial_state(),cs)
         stop=s["stop_price"]; closes=list(range(100,125))+[stop-3]
@@ -52,17 +48,34 @@ class PaperBotTests(unittest.TestCase):
         self.assertEqual(r["action"],"SELL")
         self.assertAlmostEqual(r["price"],stop-2)
         self.assertIn("gap-through-stop",r["reason"])
-
-    def test_candle_gap_halts(self):
+    def test_candle_gap_halts_without_advancing_cursor(self):
         cs=candles(list(range(100,125))); s,_=step(initial_state(),cs)
-        later=candles(list(range(100,125)),start=cs[-1]["ts"]+600_000)
+        old=s["last_candle_ts"]
+        later=candles([130],start=old+600_000)
         s,r=step(s,later)
         self.assertEqual(r["action"],"HALTED"); self.assertTrue(s["halted"])
-        self.assertIn("gap detected",r["reason"])
-
+        self.assertIn("manual recovery required",r["reason"])
+        self.assertEqual(s["last_candle_ts"],old)
+    def test_state_already_halted_never_trades_or_advances(self):
+        s=initial_state(); s["halted"]=True; old=123456
+        s["last_candle_ts"]=old
+        s,r=step(s,candles(list(range(100,125))))
+        self.assertEqual(r["action"],"HALTED")
+        self.assertEqual(s["last_candle_ts"],old)
+    def test_catches_up_contiguous_candles(self):
+        first=candles(list(range(100,125)))
+        s,_=step(initial_state(),first)
+        extra=candles([125,126,127],start=first[-1]["ts"]+300_000)
+        s,r=step(s,first+extra)
+        self.assertEqual(s["last_candle_ts"],extra[-1]["ts"])
+        self.assertEqual(len(r["events"]),3)
+    def test_missing_saved_cursor_halts_without_advancing(self):
+        s=initial_state(); s["last_candle_ts"]=1
+        s,r=step(s,candles(list(range(100,125))))
+        self.assertEqual(r["action"],"HALTED"); self.assertTrue(s["halted"])
+        self.assertEqual(s["last_candle_ts"],1)
     def test_invalid_state_fails_closed(self):
         with self.assertRaises(ValueError): validate_state({"cash_usdt":100,"btc":0})
-
     def test_state_save_reload(self):
         s,r=step(initial_state(),candles(list(range(100,125))))
         self.assertEqual(r["action"],"BUY")
@@ -72,7 +85,6 @@ class PaperBotTests(unittest.TestCase):
                 save_state(s); restored=load_state()
             for k in ("cash_usdt","btc","entry_price","entry_fee_usdt","stop_price","last_candle_ts"):
                 self.assertEqual(restored[k],s[k])
-
     def test_equity(self):
         s=initial_state(); s["cash_usdt"]=80; s["btc"]=0.001
         self.assertAlmostEqual(equity(s,20_000),100)
