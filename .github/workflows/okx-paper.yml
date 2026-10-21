@@ -1,4 +1,3 @@
-
 name: OKX BTC Spot Paper Check - 2 Hours
 
 on:
@@ -15,24 +14,19 @@ jobs:
   paper-check:
     runs-on: ubuntu-latest
     timeout-minutes: 125
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: main
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
       - name: Run unit tests
         run: python -m unittest -v
-
       - name: Run pytest if installed
         run: |
           if python -m pytest --version >/dev/null 2>&1; then
@@ -40,98 +34,64 @@ jobs:
           else
             echo "pytest not installed; skipping."
           fi
-
       - name: Run paper trading for two hours
         shell: bash
         run: |
           set -u
-
           START_TIME=$(date +%s)
           END_TIME=$((START_TIME + 7200))
           NEXT_RUN=$START_TIME
           RUN_COUNT=0
-
-          echo "Starting 2-hour BTC paper trading test."
-          echo "No real orders will be placed."
-
+          echo "Starting 2-hour BTC paper trading test. No real orders."
           while [ "$(date +%s)" -lt "$END_TIME" ]; do
             RUN_COUNT=$((RUN_COUNT + 1))
-
             echo "========================================"
             echo "Paper evaluation number: $RUN_COUNT"
             date -u
-
-            if python -c \
-              "from okx_spot_paper import run_once; run_once()"
+            if python - <<'PY'
+          from okx_spot_paper import run_once
+          state, result = run_once()
+          if state.get("halted") or result.get("action") == "HALTED":
+              print("RISK HALT: stopping workflow loop; manual review required.")
+              raise SystemExit(3)
+          PY
             then
               echo "Evaluation completed."
             else
-              echo "WARNING: Evaluation failed; continuing test."
-            fi
-
-            NEXT_RUN=$((NEXT_RUN + 300))
-            NOW=$(date +%s)
-
-            if [ "$NOW" -ge "$END_TIME" ]; then
+              echo "STOP: evaluation failed or paper bot halted. No further evaluations."
               break
             fi
-
+            NEXT_RUN=$((NEXT_RUN + 300))
+            NOW=$(date +%s)
+            if [ "$NOW" -ge "$END_TIME" ]; then break; fi
             SLEEP_FOR=$((NEXT_RUN - NOW))
-
             if [ "$SLEEP_FOR" -gt 0 ]; then
               REMAINING=$((END_TIME - NOW))
-
-              if [ "$SLEEP_FOR" -gt "$REMAINING" ]; then
-                SLEEP_FOR=$REMAINING
-              fi
-
+              if [ "$SLEEP_FOR" -gt "$REMAINING" ]; then SLEEP_FOR=$REMAINING; fi
               sleep "$SLEEP_FOR"
             fi
           done
-
-          echo "Two-hour paper test finished."
+          echo "Paper test loop ended."
           echo "Total evaluation attempts: $RUN_COUNT"
-
       - name: Check paper files
         if: always()
         run: |
-          if [ -f okx_paper_state.json ]; then
-            echo "Paper state file exists."
-            cat okx_paper_state.json
-          else
-            echo "WARNING: Paper state file missing."
-          fi
-
-          if [ -f okx_paper_trades.csv ]; then
-            echo "Paper trades file exists."
-            cat okx_paper_trades.csv
-          else
-            echo "WARNING: Paper trades file missing."
-          fi
-
+          if [ -f okx_paper_state.json ]; then cat okx_paper_state.json; else echo "WARNING: paper state missing"; fi
+          if [ -f okx_paper_trades.csv ]; then cat okx_paper_trades.csv; else echo "WARNING: paper trades missing"; fi
       - name: Persist paper state and trades
         if: always()
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
-
-          if [ -f okx_paper_state.json ]; then
-            git add okx_paper_state.json
-          fi
-
-          if [ -f okx_paper_trades.csv ]; then
-            git add okx_paper_trades.csv
-          fi
-
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          [ ! -f okx_paper_state.json ] || git add okx_paper_state.json
+          [ ! -f okx_paper_trades.csv ] || git add okx_paper_trades.csv
           if ! git diff --cached --quiet; then
-            git commit -m "Save two-hour OKX paper test results"
+            git commit -m "Save OKX paper test results"
             git push origin HEAD:main
           else
             echo "No paper files changed."
           fi
-
-      - name: Upload two-hour paper results
+      - name: Upload paper results
         if: always()
         uses: actions/upload-artifact@v4
         with:
