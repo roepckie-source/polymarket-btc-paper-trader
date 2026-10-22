@@ -18,6 +18,7 @@ on:
           - 2hours
           - historical-backtest
           - okx-gap-audit
+          - okx-replay-audit
 
 jobs:
   paper-test:
@@ -49,8 +50,10 @@ jobs:
 
       # ============================================================
       # STRATEGY TEST
+      # Skip for isolated OKX replay
       # ============================================================
       - name: Test strategy
+        if: ${{ inputs.mode != 'okx-replay-audit' }}
         run: |
           python strategy.py
 
@@ -58,6 +61,7 @@ jobs:
       # HISTORICAL BACKTEST UNIT TESTS
       # ============================================================
       - name: Test historical backtest
+        if: ${{ inputs.mode != 'okx-replay-audit' }}
         run: |
           python -m unittest test_historical_backtest.py
 
@@ -94,6 +98,7 @@ jobs:
       # PAPER TRADER TEST
       # ============================================================
       - name: Test paper trader
+        if: ${{ inputs.mode != 'okx-replay-audit' }}
         run: |
           python test_paper.py
 
@@ -101,6 +106,7 @@ jobs:
       # CROSS-MARKET PAPER SIGNAL TESTS
       # ============================================================
       - name: Test cross-market paper signal logic
+        if: ${{ inputs.mode != 'okx-replay-audit' }}
         run: |
           python -m pytest -q test_cross_market_paper.py
 
@@ -108,6 +114,7 @@ jobs:
       # BTC MARKET DATA
       # ============================================================
       - name: Test BTC market data
+        if: ${{ inputs.mode != 'okx-replay-audit' }}
         run: |
           python market_data.py
 
@@ -115,6 +122,7 @@ jobs:
       # POLYMARKET DATA
       # ============================================================
       - name: Test Polymarket market data
+        if: ${{ inputs.mode != 'okx-replay-audit' }}
         run: |
           python polymarket_data.py
 
@@ -122,6 +130,7 @@ jobs:
       # KRAKEN DATA
       # ============================================================
       - name: Test Kraken BTC 5M data
+        if: ${{ inputs.mode != 'okx-replay-audit' }}
         run: |
           python kraken_test.py
 
@@ -216,15 +225,15 @@ jobs:
           echo "READ ONLY — NO ORDERS"
           echo "NO STATE RESET — NO HALT OVERRIDE"
 
-          if [ ! -f okx_gap_audit.py ]; then
+          test -f okx_gap_audit.py || {
             echo "ERROR: okx_gap_audit.py is missing."
             exit 1
-          fi
+          }
 
-          if [ ! -f okx_paper_state.json ]; then
+          test -f okx_paper_state.json || {
             echo "ERROR: okx_paper_state.json is missing."
             exit 1
-          fi
+          }
 
           python okx_gap_audit.py okx_paper_state.json \
             --output okx_gap_audit.csv
@@ -235,7 +244,62 @@ jobs:
         with:
           name: okx-gap-audit-report
           path: okx_gap_audit.csv
-          if-no-files-found: warn
+          if-no-files-found: error
+          retention-days: 30
+
+      # ============================================================
+      # OKX ISOLATED REPLAY — READ ONLY
+      # ============================================================
+      - name: Run isolated OKX replay audit
+        if: ${{ inputs.mode == 'okx-replay-audit' }}
+        run: |
+          set -e
+
+          echo "OKX BTC-USDT ISOLATED REPLAY AUDIT"
+          echo "READ ONLY — NO REAL ORDERS"
+          echo "ORIGINAL STATE MUST NOT BE MODIFIED"
+          echo "HALT IS CLEARED ONLY IN MEMORY"
+
+          test -f okx_replay_audit.py || {
+            echo "ERROR: okx_replay_audit.py is missing."
+            exit 1
+          }
+
+          test -f okx_spot_paper.py || {
+            echo "ERROR: okx_spot_paper.py is missing."
+            exit 1
+          }
+
+          test -f okx_paper_config.py || {
+            echo "ERROR: okx_paper_config.py is missing."
+            exit 1
+          }
+
+          test -f okx_paper_state.json || {
+            echo "ERROR: okx_paper_state.json is missing."
+            exit 1
+          }
+
+          cp okx_paper_state.json /tmp/okx_paper_state.before.json
+          sha256sum okx_paper_state.json > /tmp/okx_state_before.sha256
+
+          python okx_replay_audit.py
+
+          sha256sum -c /tmp/okx_state_before.sha256
+          cmp -s okx_paper_state.json /tmp/okx_paper_state.before.json || {
+            echo "ERROR: Original OKX state changed during replay."
+            exit 1
+          }
+
+          echo "PASS: Original OKX state is unchanged."
+
+      - name: Upload OKX replay events
+        if: ${{ always() && inputs.mode == 'okx-replay-audit' && hashFiles('okx_replay_events.csv') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: okx-replay-audit-report
+          path: okx_replay_events.csv
+          if-no-files-found: error
           retention-days: 30
 
       # ============================================================
