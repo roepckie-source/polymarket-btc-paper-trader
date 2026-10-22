@@ -17,66 +17,45 @@ on:
           - forsee-strategy-test
           - 2hours
           - historical-backtest
-          - okx-gap-audit
-          - okx-replay-audit
+          - polymarket-30m-paper
+
+permissions:
+  contents: read
 
 jobs:
   paper-test:
+    if: ${{ inputs.mode != 'polymarket-30m-paper' }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
 
     steps:
-      # ============================================================
-      # CHECKOUT
-      # ============================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ============================================================
-      # PYTHON
-      # ============================================================
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # ============================================================
-      # DEPENDENCIES
-      # ============================================================
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests pytest
 
-      # ============================================================
-      # STRATEGY TEST
-      # Skip for isolated OKX replay
-      # ============================================================
       - name: Test strategy
-        if: ${{ inputs.mode != 'okx-replay-audit' }}
-        run: |
-          python strategy.py
+        run: python strategy.py
 
-      # ============================================================
-      # HISTORICAL BACKTEST UNIT TESTS
-      # ============================================================
       - name: Test historical backtest
-        if: ${{ inputs.mode != 'okx-replay-audit' }}
-        run: |
-          python -m unittest test_historical_backtest.py
+        run: python -m unittest test_historical_backtest.py
 
-      # ============================================================
-      # HISTORICAL BACKTEST (CSV REQUIRED)
-      # ============================================================
       - name: Run historical backtest
-        if: ${{ inputs.mode == 'historical-backtest' }}
+        if: inputs.mode == 'historical-backtest'
         run: |
           echo "HISTORICAL PAPER BACKTEST — NO ORDERS PLACED"
 
           if [ ! -f historical_btc_5m.csv ]; then
             echo "ERROR: historical_btc_5m.csv is missing."
-            echo "Upload a real dataset with pre-resolution snapshots and final UP/DOWN outcomes."
-            echo "historical_btc_5m_TEMPLATE.csv is only a template, not historical data."
+            echo "A real historical dataset is required."
             exit 1
           fi
 
@@ -86,7 +65,7 @@ jobs:
             --slippage-per-contract 0.001
 
       - name: Upload historical backtest results
-        if: ${{ always() && inputs.mode == 'historical-backtest' && hashFiles('historical_backtest_results.csv') != '' }}
+        if: always() && inputs.mode == 'historical-backtest' && hashFiles('historical_backtest_results.csv') != ''
         uses: actions/upload-artifact@v4
         with:
           name: historical-backtest-results
@@ -94,85 +73,48 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # ============================================================
-      # PAPER TRADER TEST
-      # ============================================================
       - name: Test paper trader
-        if: ${{ inputs.mode != 'okx-replay-audit' }}
-        run: |
-          python test_paper.py
+        run: python test_paper.py
 
-      # ============================================================
-      # CROSS-MARKET PAPER SIGNAL TESTS
-      # ============================================================
       - name: Test cross-market paper signal logic
-        if: ${{ inputs.mode != 'okx-replay-audit' }}
-        run: |
-          python -m pytest -q test_cross_market_paper.py
+        run: python -m pytest -q test_cross_market_paper.py
 
-      # ============================================================
-      # BTC MARKET DATA
-      # ============================================================
       - name: Test BTC market data
-        if: ${{ inputs.mode != 'okx-replay-audit' }}
-        run: |
-          python market_data.py
+        run: python market_data.py
 
-      # ============================================================
-      # POLYMARKET DATA
-      # ============================================================
       - name: Test Polymarket market data
-        if: ${{ inputs.mode != 'okx-replay-audit' }}
-        run: |
-          python polymarket_data.py
+        run: python polymarket_data.py
 
-      # ============================================================
-      # KRAKEN DATA
-      # ============================================================
       - name: Test Kraken BTC 5M data
-        if: ${{ inputs.mode != 'okx-replay-audit' }}
-        run: |
-          python kraken_test.py
+        run: python kraken_test.py
 
-      # ============================================================
-      # MEXC TEST
-      # ============================================================
       - name: Test MEXC BTC 5M
-        if: ${{ inputs.mode == 'mexc-test' }}
+        if: inputs.mode == 'mexc-test'
         run: |
           echo "MEXC BTC 5M TEST"
           echo "READ ONLY — NO ORDERS"
           python mexc_prediction_data.py
 
-      # ============================================================
-      # FORSEE READ-ONLY TEST
-      # ============================================================
       - name: Test Forsee BTC 5M
-        if: ${{ inputs.mode == 'forsee-test' }}
+        if: inputs.mode == 'forsee-test'
         env:
           FORSEE_API_KEY: ${{ secrets.FORSEE_API_KEY }}
         run: |
           echo "FORSEE BTC 5M READ-ONLY TEST"
-          echo "ORDERS DISABLED — WALLET NOT USED — PAPER ONLY"
+          echo "ORDERS DISABLED — NO WALLET — PAPER ONLY"
           python forsee_prediction_data.py
 
-      # ============================================================
-      # FORSEE STRATEGY TEST
-      # ============================================================
       - name: Test Forsee strategy
-        if: ${{ inputs.mode == 'forsee-strategy-test' }}
+        if: inputs.mode == 'forsee-strategy-test'
         env:
           FORSEE_API_KEY: ${{ secrets.FORSEE_API_KEY }}
         run: |
           echo "FORSEE BTC 5M STRATEGY TEST"
-          echo "PAPER ONLY — NO ORDERS — NO BETS — NO WALLET"
+          echo "PAPER ONLY — NO ORDERS — NO WALLET"
           python forsee_strategy.py
 
-      # ============================================================
-      # POLYMARKET FEE TEST
-      # ============================================================
       - name: Test Polymarket fee API
-        if: ${{ inputs.mode == 'fee-test' }}
+        if: inputs.mode == 'fee-test'
         run: |
           python - <<'PY'
           from polymarket_data import get_market_data
@@ -191,23 +133,18 @@ jobs:
 
           if not condition_id:
               raise RuntimeError("No condition_id found")
-
           if not token_ids:
               raise RuntimeError("No token IDs found")
 
-          token_id = token_ids[0]
-          print(f"Using token ID: {token_id}")
-
           fee_info = get_fee_info(
               condition_id=condition_id,
-              token_id=token_id,
+              token_id=token_ids[0],
           )
 
           if not fee_info:
               raise RuntimeError("No fee information returned")
 
           print("FEE INFORMATION")
-          print("-" * 60)
           print(f"Fee rate:   {fee_info.get('fee_rate')}")
           print(f"Fee rate %: {fee_info.get('fee_rate_percent')}")
           print(f"Fee BPS:    {fee_info.get('fee_bps')}")
@@ -215,124 +152,114 @@ jobs:
           print("FEE TEST COMPLETE")
           PY
 
-      # ============================================================
-      # OKX GAP AUDIT — READ ONLY
-      # ============================================================
-      - name: Run OKX historical gap audit
-        if: ${{ inputs.mode == 'okx-gap-audit' }}
-        run: |
-          echo "OKX BTC-USDT HISTORICAL GAP AUDIT"
-          echo "READ ONLY — NO ORDERS"
-          echo "NO STATE RESET — NO HALT OVERRIDE"
-
-          test -f okx_gap_audit.py || {
-            echo "ERROR: okx_gap_audit.py is missing."
-            exit 1
-          }
-
-          test -f okx_paper_state.json || {
-            echo "ERROR: okx_paper_state.json is missing."
-            exit 1
-          }
-
-          python okx_gap_audit.py okx_paper_state.json \
-            --output okx_gap_audit.csv
-
-      - name: Upload OKX gap audit report
-        if: ${{ always() && inputs.mode == 'okx-gap-audit' && hashFiles('okx_gap_audit.csv') != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: okx-gap-audit-report
-          path: okx_gap_audit.csv
-          if-no-files-found: error
-          retention-days: 30
-
-      # ============================================================
-      # OKX ISOLATED REPLAY — READ ONLY
-      # ============================================================
-      - name: Run isolated OKX replay audit
-        if: ${{ inputs.mode == 'okx-replay-audit' }}
-        run: |
-          set -e
-
-          echo "OKX BTC-USDT ISOLATED REPLAY AUDIT"
-          echo "READ ONLY — NO REAL ORDERS"
-          echo "ORIGINAL STATE MUST NOT BE MODIFIED"
-          echo "HALT IS CLEARED ONLY IN MEMORY"
-
-          test -f okx_replay_audit.py || {
-            echo "ERROR: okx_replay_audit.py is missing."
-            exit 1
-          }
-
-          test -f okx_spot_paper.py || {
-            echo "ERROR: okx_spot_paper.py is missing."
-            exit 1
-          }
-
-          test -f okx_paper_config.py || {
-            echo "ERROR: okx_paper_config.py is missing."
-            exit 1
-          }
-
-          test -f okx_paper_state.json || {
-            echo "ERROR: okx_paper_state.json is missing."
-            exit 1
-          }
-
-          cp okx_paper_state.json /tmp/okx_paper_state.before.json
-          sha256sum okx_paper_state.json > /tmp/okx_state_before.sha256
-
-          python okx_replay_audit.py
-
-          sha256sum -c /tmp/okx_state_before.sha256
-          cmp -s okx_paper_state.json /tmp/okx_paper_state.before.json || {
-            echo "ERROR: Original OKX state changed during replay."
-            exit 1
-          }
-
-          echo "PASS: Original OKX state is unchanged."
-
-      - name: Upload OKX replay events
-        if: ${{ always() && inputs.mode == 'okx-replay-audit' && hashFiles('okx_replay_events.csv') != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: okx-replay-audit-report
-          path: okx_replay_events.csv
-          if-no-files-found: error
-          retention-days: 30
-
-      # ============================================================
-      # SINGLE PAPER TEST
-      # ============================================================
       - name: Single paper test
-        if: ${{ inputs.mode == 'single' }}
+        if: inputs.mode == 'single'
         run: |
           echo "SINGLE PAPER TEST"
           echo "PAPER ONLY — NO LIVE TRADING — NO REAL ORDERS"
           python paper_live.py
 
-      # ============================================================
-      # 2 HOUR PAPER RUN
-      # ============================================================
       - name: 2 hour paper run
-        if: ${{ inputs.mode == '2hours' }}
+        if: inputs.mode == '2hours'
         run: |
+          set -e
           echo "2 HOUR PAPER TRADING RUN"
-          echo "24 CHECKS — APPROXIMATELY 5 MINUTES BETWEEN CHECKS"
+          echo "24 CHECKS — APPROXIMATELY 5 MINUTES APART"
           echo "PAPER ONLY — NO LIVE TRADING — NO REAL ORDERS"
 
           for i in $(seq 1 24); do
-            echo "============================================================"
+            echo "========================================"
             echo "PAPER RUN $i / 24"
-            echo "============================================================"
-
+            date -u
             python paper_live.py
 
             if [ "$i" -lt 24 ]; then
-              echo "Waiting 300 seconds until next check..."
+              echo "Waiting 300 seconds..."
               sleep 300
             fi
           done
 
           echo "2 HOUR PAPER RUN COMPLETE"
+
+  polymarket-30m-paper:
+    if: ${{ inputs.mode == 'polymarket-30m-paper' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Prepare isolated paper environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "POLYMARKET BTC 30-MINUTE PAPER TEST"
+          echo "PAPER ONLY"
+          echo "NO REAL ORDERS"
+          echo "NO WALLET"
+          echo "NO PRIVATE KEYS"
+
+          grep -Fq 'LIVE_TRADING = False' paper_live.py
+
+          RUN_DIR="$RUNNER_TEMP/polymarket-30m"
+          mkdir -p "$RUN_DIR/logs"
+
+          cp ./*.py "$RUN_DIR/"
+
+          echo "Isolated directory prepared."
+          echo "Original paper state and trades will not be copied."
+
+      - name: Run seven checks over 30 minutes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RUN_DIR="$RUNNER_TEMP/polymarket-30m"
+          cd "$RUN_DIR"
+
+          for i in 1 2 3 4 5 6 7; do
+            LOG_FILE="logs/run-$(printf '%02d' "$i").log"
+
+            {
+              echo "=================================================="
+              echo "CHECK $i / 7"
+              date -u
+              echo "PAPER ONLY — NO REAL ORDERS"
+              echo "=================================================="
+            } | tee "$LOG_FILE"
+
+            if python paper_live.py 2>&1 | tee -a "$LOG_FILE"; then
+              echo "CHECK $i COMPLETED" | tee -a "$LOG_FILE"
+            else
+              echo "CHECK $i FAILED" | tee -a "$LOG_FILE"
+              exit 1
+            fi
+
+            if [ "$i" -lt 7 ]; then
+              echo "Waiting 300 seconds until next check..."
+              sleep 300
+            fi
+          done
+
+          echo "30-MINUTE PAPER TEST COMPLETE"
+
+      - name: Upload isolated paper test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: polymarket-30m-paper-results
+          path: ${{ runner.temp }}/polymarket-30m/
+          if-no-files-found: warn
+          retention-days: 30
