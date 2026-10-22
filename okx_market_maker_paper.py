@@ -31,7 +31,7 @@ def round_down(x, step):
 def initial_state(mid):
     if not math.isfinite(mid) or mid <= 0: raise ValueError("mid must be positive")
     cash=STARTING_EQUITY_USDT*INITIAL_CASH_FRACTION; btc=(STARTING_EQUITY_USDT-cash)/mid
-    return {"version":1,"instrument":INSTRUMENT,"cash_usdt":cash,"btc":btc,"btc_cost_usdt":btc*mid,"realized_pnl_usdt":0.0,"starting_equity_usdt":STARTING_EQUITY_USDT,"equity_peak_usdt":STARTING_EQUITY_USDT,"halted":False,"buy_order":None,"sell_order":None,"last_mid":mid,"initialized":True,"created_at_utc":utc_now(),"updated_at_utc":utc_now()}
+    return {"version":1,"instrument":INSTRUMENT,"cash_usdt":cash,"btc":btc,"btc_cost_usdt":btc*mid,"realized_pnl_usdt":0.0,"starting_equity_usdt":STARTING_EQUITY_USDT,"equity_peak_usdt":STARTING_EQUITY_USDT,"halted":False,"buy_order":None,"sell_order":None,"last_mid":mid,"last_quote_mid":mid,"initialized":True,"created_at_utc":utc_now(),"updated_at_utc":utc_now()}
 
 def validate_state(s):
     required={"version","instrument","cash_usdt","btc","btc_cost_usdt","realized_pnl_usdt","starting_equity_usdt","equity_peak_usdt","halted","buy_order","sell_order","last_mid"}
@@ -110,9 +110,15 @@ def step(s,b):
     if dd >= MAX_DRAWDOWN_PCT:
         s.update({"halted":True,"buy_order":None,"sell_order":None}); detail=f"drawdown {dd:.2%} reached halt threshold"
         _log_snapshot(s,b,detail); return s,{"action":"HALTED","reason":detail,"fills":fills}
-    moved=abs(mid/float(s["last_mid"])-1) >= REPRICE_THRESHOLD_PCT
-    if fills or moved or (s.get("buy_order") is None and s.get("sell_order") is None): detail=_quote(s,b)
-    else: detail="quotes kept resting; midpoint move below reprice threshold"
+    # Compare against the midpoint when quotes were last placed, not the previous
+    # polling snapshot. Otherwise many small moves never accumulate to a re-quote.
+    quote_anchor=float(s.setdefault("last_quote_mid", s["last_mid"]))
+    moved=abs(mid/quote_anchor-1) >= REPRICE_THRESHOLD_PCT
+    if fills or moved or (s.get("buy_order") is None and s.get("sell_order") is None):
+        detail=_quote(s,b)
+        s["last_quote_mid"]=mid
+    else:
+        detail="quotes kept resting; midpoint move below reprice threshold from last quote"
     if s.get("buy_order") and s.get("sell_order") and s["buy_order"]["price"] >= s["sell_order"]["price"]: raise RuntimeError("BUY quote must be below SELL quote")
     if s.get("sell_order") and s["sell_order"]["quantity"] > s["btc"]+1e-9: raise RuntimeError("SELL quote exceeds virtual BTC inventory")
     if s.get("buy_order") and s["buy_order"]["price"]*s["buy_order"]["quantity"]*(1+MAKER_FEE_RATE) > s["cash_usdt"]+1e-8: raise RuntimeError("BUY quote exceeds virtual cash")
