@@ -14,6 +14,15 @@ class MarketMakerTests(unittest.TestCase):
         s,_=mm.step(self.state,book(99.9,100.1)); order=s['buy_order']; s,r=mm.step(s,book(order['price']-0.1,order['price'])); self.assertTrue(any(x['side']=='BUY' for x in r['fills']))
     def test_sell_fill_when_bid_crosses_limit(self):
         s,_=mm.step(self.state,book(99.9,100.1)); order=s['sell_order']; s,r=mm.step(s,book(order['price'],order['price']+0.1)); self.assertTrue(any(x['side']=='SELL' for x in r['fills']))
+    def test_small_moves_accumulate_from_last_quote_mid(self):
+        s,_=mm.step(self.state,book(99.95,100.05))  # initial quotes at mid 100.00
+        old_buy=s["buy_order"]["price"]
+        s,_=mm.step(s,book(100.00,100.10))  # mid 100.05: +0.05%
+        self.assertEqual(s["buy_order"]["price"],old_buy)
+        s,_=mm.step(s,book(100.06,100.16))  # mid 100.11: +0.11% total
+        self.assertNotEqual(s["buy_order"]["price"],old_buy)
+        self.assertAlmostEqual(s["last_quote_mid"],100.11)
+
     def test_no_fill_without_crossing(self):
         s,_=mm.step(self.state,book(99.9,100.1)); before=(s['cash_usdt'],s['btc']); s,r=mm.step(s,book(99.8,100.2)); self.assertEqual(r['fills'],[]); self.assertEqual(before,(s['cash_usdt'],s['btc']))
     def test_invalid_book(self):
