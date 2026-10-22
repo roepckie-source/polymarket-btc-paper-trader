@@ -1,6 +1,6 @@
 
 #!/usr/bin/env python3
-"""Read-only audit of missing OKX BTC-USDT 5m candles.
+"""Read-only audit of the OKX BTC-USDT 5m candle gap.
 
 Reads the paper state and public OKX market data only.
 Does NOT modify state, trades, balances, positions, or halt flags.
@@ -42,7 +42,7 @@ def fetch_page(before_ms: int, limit: int = LIMIT) -> list[list[str]]:
     request = urllib.request.Request(
         f"{BASE_URL}?{params}",
         headers={
-            "User-Agent": "okx-paper-gap-audit/1.0",
+            "User-Agent": "okx-paper-gap-audit/1.1",
             "Accept": "application/json",
         },
     )
@@ -72,18 +72,21 @@ def candle_from_row(row: list[str]) -> dict | None:
             "low": float(row[3]),
             "close": float(row[4]),
             "volume": float(row[5]),
-            "confirm": row[8],
+            "confirm": str(row[8]),
         }
     except (ValueError, TypeError, IndexError):
         return None
 
 
-def fetch_gap(last_ts: int, end_ms: int) -> list[dict]:
-    """Fetch all available closed candles after last_ts through end_ms."""
+def fetch_gap(
+    last_ts: int,
+    last_closed_open_ms: int,
+) -> list[dict]:
+    """Fetch closed candles in the gap, excluding the current candle."""
     candles_by_ts: dict[int, dict] = {}
 
-    # OKX 'after' pagination moves backward in time.
-    cursor = end_ms + BAR_MS
+    # OKX history pagination moves backwards through candle timestamps.
+    cursor = last_closed_open_ms + BAR_MS
     previous_oldest = None
 
     for page_number in range(1, MAX_PAGES + 1):
@@ -92,29 +95,33 @@ def fetch_gap(last_ts: int, end_ms: int) -> list[dict]:
         if not rows:
             break
 
-        page = []
+        page_timestamps = []
+
         for row in rows:
             candle = candle_from_row(row)
             if candle is None:
                 continue
 
             ts = candle["timestamp_ms"]
+            page_timestamps.append(ts)
 
-            if last_ts < ts <= end_ms and candle["confirm"] == "1":
+            # CRITICAL FIX:
+            # Never include a candle starting after the last fully closed
+            # 5-minute candle, even if the API unexpectedly marks it confirmed.
+            if (
+                last_ts < ts <= last_closed_open_ms
+                and candle["confirm"] == "1"
+            ):
                 candles_by_ts[ts] = candle
 
-            page.append(ts)
-
-        if not page:
+        if not page_timestamps:
             break
 
-        oldest = min(page)
+        oldest = min(page_timestamps)
 
-        # Reaching the prior processed candle means the gap is covered.
         if oldest <= last_ts:
             break
 
-        # Guard against a pagination loop.
         if oldest == previous_oldest:
             raise RuntimeError(
                 "Pagination did not advance; audit is inconclusive."
@@ -123,7 +130,6 @@ def fetch_gap(last_ts: int, end_ms: int) -> list[dict]:
         previous_oldest = oldest
         cursor = oldest
 
-        # Short pages normally indicate the end of available history.
         if len(rows) < LIMIT:
             break
 
@@ -154,7 +160,7 @@ def main() -> int:
         "--now-ms",
         type=int,
         default=None,
-        help="Optional fixed end timestamp in Unix milliseconds",
+        help="Optional fixed audit-end timestamp in Unix milliseconds",
     )
     args = parser.parse_args()
 
@@ -175,19 +181,27 @@ def main() -> int:
         print("ERROR: audit end time must be after last candle.")
         return 1
 
+    # The current 5-minute bucket is not considered closed.
+    current_bucket_open_ms = (end_ms // BAR_MS) * BAR_MS
+    last_closed_open_ms = current_bucket_open_ms - BAR_MS
+
+    if last_ts % BAR_MS != 0:
+        print("ERROR: saved candle timestamp is not aligned to 5 minutes.")
+        return 1
+
+    if last_closed_open_ms <= last_ts:
+        print("ERROR: no complete candle interval available to audit.")
+        return 1
+
     print("Instrument: BTC-USDT | interval: 5m")
     print(f"Last processed candle: {iso(last_ts)}")
-    print(f"Audit end time:        {iso(end_ms)}")
+    print(f"Audit wall-clock time: {iso(end_ms)}")
+    print(f"Last closed candle:    {iso(last_closed_open_ms)}")
     print(f"Stored stop price:     {stop_price:.2f} USDT")
     print(f"Stored halted flag:    {state.get('halted')!r}")
     print("Mode: READ-ONLY; state file will not be modified")
 
-    candles = fetch_gap(last_ts, end_ms)
-
-    # Only fully closed candles are expected.
-    last_closed_open_ms = (
-        end_ms // BAR_MS
-    ) * BAR_MS - BAR_MS
+    candles = fetch_gap(last_ts, last_closed_open_ms)
 
     expected = list(range(
         last_ts + BAR_MS,
@@ -197,9 +211,16 @@ def main() -> int:
 
     got = {c["timestamp_ms"] for c in candles}
     missing = [ts for ts in expected if ts not in got]
+
     stop_hits = [
         c for c in candles
         if c["low"] <= stop_price
+    ]
+
+    # Reject any unexpected timestamp rather than silently accepting it.
+    out_of_range = [
+        c for c in candles
+        if not last_ts < c["timestamp_ms"] <= last_closed_open_ms
     ]
 
     output_path = Path(args.output)
@@ -224,6 +245,7 @@ def main() -> int:
     print(f"Closed candles retrieved: {len(candles)}")
     print(f"Expected candle timestamps: {len(expected)}")
     print(f"Missing timestamps: {len(missing)}")
+    print(f"Out-of-range candles: {len(out_of_range)}")
 
     if missing:
         print(f"First missing: {iso(missing[0])}")
@@ -251,13 +273,13 @@ def main() -> int:
     print(f"CSV report written: {output_path.resolve()}")
     print("No state reset, halt override, or trade replay was performed.")
 
-    if missing or not candles:
+    if missing or not candles or out_of_range:
         print("RESULT: INCONCLUSIVE — keep the paper trader halted.")
         return 2
 
     if stop_hits:
         print(
-            "RESULT: STOP LEVEL REACHED in at least one 5m candle. "
+            "RESULT: STOP LEVEL REACHED in at least one candle. "
             "Keep halted and inspect execution rules."
         )
         return 3
