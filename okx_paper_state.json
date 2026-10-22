@@ -7,5 +7,7 @@
   "last_candle_ts": 1792590900000,
   "equity_peak_usdt": 100.14889324341164,
   "halted": true,
-  "updated_at_utc": "2026-10-21T14:00:54.965019+00:00"
+  "updated_at_utc": "2026-10-22T07:21:09.856477+00:00",
+  "halt_reason": "legacy halted state; original reason unavailable; manual review required",
+  "halted_at_utc": null
 }
