@@ -1,0 +1,3 @@
+time_utc,event,side,price,quantity,notional_usdt,fee_usdt,realized_pnl_usdt,cash_usdt,btc,mid_price,equity_usdt,detail
+2026-10-22T10:34:54.075862+00:00,FILL,BUY,99.80000000000001,0.1002,9.999960000000002,0.009999960000000002,0.0,39.99004004,0.6002,99.75000000000001,99.85999004,Simulated fill after public book crossed limit; queue/partial fills not modeled
+2026-10-22T10:34:54.076751+00:00,FILL,SELL,100.2,0.0998,9.99996,0.00999996,0.009960039999999282,59.98996004,0.4002,100.25,100.11001003999999,Simulated fill after public book crossed limit; queue/partial fills not modeled
